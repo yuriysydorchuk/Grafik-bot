@@ -154,7 +154,12 @@ export function WorkerModal({ worker, factories, companies, isOwner, onClose, on
           </Select>
         </div>
         <div><Label>{t("Фабрика")}</Label>
-          <Select value={factoryId} onChange={e => setFactoryId(e.target.value)}>
+          {/* фабрика з однією фірмою тягне за собою фірму (зголошення #28); на multi-firm фірму вибирають самі */}
+          <Select value={factoryId} onChange={e => {
+            setFactoryId(e.target.value);
+            const nf = factories.find(f => String(f.id) === e.target.value);
+            if (nf && !nf.multiFirm && nf.companyId != null) setCompanyId(String(nf.companyId));
+          }}>
             <option value="">{t("— без фабрики —")}</option>
             {factories.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
           </Select>

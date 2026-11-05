@@ -572,6 +572,20 @@ router.patch("/workers/:id", RW, async (req, res) => {
   if (req.body?.middleName !== undefined) patch.middleName = strOrNull(req.body.middleName);
   if (factoryId !== undefined) patch.factoryId = factoryId ?? null;
   if (companyId !== undefined) patch.companyId = companyId ?? null;
+  // Фабрика → фірма (зголошення #28): перевели на іншу фабрику, а фірму лишили стару — умови, ZUS і
+  // powiadomienie йшли б не на того роботодавця. Якщо фабрика СПРАВДІ змінилась, фірму в цьому ж
+  // запиті не передали (бейдж фабрики в профілі), і в нової фабрики фірма одна (не multi_firm) —
+  // ставимо фірму фабрики. Форма редагування шле обидва поля й підставляє фірму сама (WorkerModal) —
+  // там свідомий вибір іншої фірми поважаємо.
+  let autoCompany: { id: number; name: string } | null = null;
+  if (before && patch.factoryId != null && patch.factoryId !== before.factoryId && companyId === undefined) {
+    const [nf] = await db.select({ companyId: factoriesTable.companyId, multiFirm: factoriesTable.multiFirm }).from(factoriesTable).where(eq(factoriesTable.id, Number(patch.factoryId)));
+    if (nf && !nf.multiFirm && nf.companyId != null && nf.companyId !== before.companyId) {
+      patch.companyId = nf.companyId;
+      const [co] = await db.select({ name: companiesTable.name }).from(companiesTable).where(eq(companiesTable.id, nf.companyId));
+      autoCompany = { id: nf.companyId, name: co?.name ?? `#${nf.companyId}` };
+    }
+  }
   if (positionId !== undefined) patch.positionId = positionId ?? null;
   if (gender !== undefined) patch.gender = normGender(gender);
   if (fixedShift !== undefined) patch.fixedShift = normFixedShift(fixedShift);
@@ -724,7 +738,7 @@ router.patch("/workers/:id", RW, async (req, res) => {
       .orderBy(desc(contractsTable.id)).limit(1);
     supersedeContractId = signed?.id ?? null;
   }
-  ok(res, { ...stripWorkerEcho(w, req), supersedeContractId });
+  ok(res, { ...stripWorkerEcho(w, req), supersedeContractId, autoCompany });
 });
 
 // Дата звільнення вже звільненого — services/workerFire.ts changeFireDate (22.10.2026)

@@ -21,7 +21,7 @@ export interface TaskRow {
   watchers: { adminId: number; name: string | null }[]; // спостерігачі
   agenda: string[]; summary: string | null;           // зустріч: порядок денний, підсумок після «Провели»
   documentTitle: string | null; contractLabel: string | null; candidateName: string | null; // привʼязки
-  overdue: boolean; checklistDone: number; checklistTotal: number;
+  overdue: boolean; checklistDone: number; checklistTotal: number; commentCount?: number;
 }
 export interface TaskAttachment { path: string; name: string; mime: string; size: number }
 export interface TaskComment { id: number; adminId: number | null; name: string | null; body: string; mentions?: number[]; attachments?: TaskAttachment[]; createdAt: string }

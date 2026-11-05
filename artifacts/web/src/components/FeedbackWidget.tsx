@@ -234,6 +234,21 @@ export function FeedbackWidget({ me }: { me: Me }) {
   const vote = async (id: number, on: boolean, key: unknown[]) => { try { if (on) await post(`/feedback/${id}/vote`); else await del(`/feedback/${id}/vote`); qc.invalidateQueries({ queryKey: key }); } catch (e: any) { toast.error(e.message); } };
   const join = async (id: number) => { await vote(id, true, ["feedback-page"]); setJoined(id); toast.success(t("Приєднано до №{n}", { n: id })); };
 
+  // Віджет лежить НАД модалками (z-[65] проти z-50/z-[60], зголошення #17: з відкритого вікна зголосити
+  // було неможливо), тож Esc у ньому не має діставатись вікну під ним: перехоплюємо у фазі capture —
+  // закривається лише верхній шар віджета (пін → анотатор → панель), модалка зі своєю формою лишається.
+  useEffect(() => {
+    if (!open && !pinMode && !annot) return;
+    const onEsc = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.stopPropagation(); e.stopImmediatePropagation();
+      if (pinMode) setPinMode(false);
+      else if (annot) { URL.revokeObjectURL(annot); setAnnot(null); }
+      else setOpen(false);
+    };
+    window.addEventListener("keydown", onEsc, true);
+    return () => window.removeEventListener("keydown", onEsc, true);
+  }, [open, pinMode, annot]);
   if (mine?.widgetOff) return null;
   const tone = TONE_BORDER[toneOf(kind, severity)];
 
@@ -250,7 +265,7 @@ export function FeedbackWidget({ me }: { me: Me }) {
 
       {/* запис дій — пілюля над кнопкою */}
       {recording && !open && (
-        <div className="fixed bottom-20 right-5 z-[45] flex items-center gap-2 rounded-full border border-rose-300 bg-rose-50 px-3 py-1.5 text-xs font-semibold text-rose-700 shadow-lg">
+        <div className="fixed bottom-20 right-5 z-[65] flex items-center gap-2 rounded-full border border-rose-300 bg-rose-50 px-3 py-1.5 text-xs font-semibold text-rose-700 shadow-lg">
           <span className="h-2.5 w-2.5 animate-pulse rounded-full bg-rose-600" /> {t("Запис дій")} {Math.floor(recSec / 60)}:{String(recSec % 60).padStart(2, "0")}
           <button onClick={() => { stopRecording("user"); setOpen(true); }} className="ml-1 rounded-md bg-white px-1.5 py-0.5 text-rose-700 ring-1 ring-rose-200 hover:bg-rose-100"><Square className="inline h-3 w-3" /> {t("Готово")}</button>
         </div>
@@ -258,14 +273,14 @@ export function FeedbackWidget({ me }: { me: Me }) {
 
       {/* кнопка */}
       <button onClick={() => setOpen(o => !o)} title={`${t("Зголосити проблему або побажання")} (Alt+F)`}
-        className="fixed bottom-5 right-5 z-[45] flex h-11 w-11 items-center justify-center rounded-full bg-red-600 text-white shadow-lg shadow-red-600/30 transition hover:bg-red-700 print:hidden">
+        className="fixed bottom-5 right-5 z-[65] flex h-11 w-11 items-center justify-center rounded-full bg-red-600 text-white shadow-lg shadow-red-600/30 transition hover:bg-red-700 print:hidden">
         {open ? <X className="h-5 w-5" /> : <Bug className="h-5 w-5" />}
         {!open && unread > 0 && <span className="absolute -right-1 -top-1 rounded-full bg-sky-600 px-1.5 text-[10px] font-bold leading-4 text-white ring-2 ring-white">{unread}</span>}
       </button>
 
       {/* панель */}
       {open && (
-        <div className="fixed bottom-20 right-5 z-[45] flex max-h-[min(80vh,640px)] w-[360px] max-w-[calc(100vw-2.5rem)] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl shadow-slate-900/20">
+        <div className="fixed bottom-20 right-5 z-[65] flex max-h-[min(80vh,640px)] w-[360px] max-w-[calc(100vw-2.5rem)] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl shadow-slate-900/20">
           <div className="flex items-center gap-1 border-b border-slate-100 px-2 pt-2">
             {([["new", t("Нове")], ["mine", `${t("Мої")}${mine?.reports.length ? ` · ${mine.reports.length}` : ""}`], ["page", t("На цій сторінці")]] as const).map(([k, l]) => (
               <button key={k} onClick={() => setTab(k)} className={cn("-mb-px border-b-2 px-2.5 py-1.5 text-xs font-medium", tab === k ? "border-red-600 text-red-700" : "border-transparent text-slate-500 hover:text-slate-700")}>{l}{k === "mine" && unread > 0 && <span className="ml-1 rounded-full bg-sky-600 px-1.5 text-[10px] text-white">{unread}</span>}</button>

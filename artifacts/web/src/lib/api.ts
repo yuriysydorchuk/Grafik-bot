@@ -24,12 +24,20 @@ export async function api<T = any>(path: string, opts: RequestInit = {}): Promis
   const started = Date.now();
   const method = (opts.method ?? "GET").toUpperCase();
   let res: Response;
+  const send = () => fetch(`/api${path}`, {
+    credentials: "include",
+    headers: { "Content-Type": "application/json", "X-Requested-With": "grafik", ...(opts.headers || {}) },
+    ...opts,
+  });
   try {
-    res = await fetch(`/api${path}`, {
-      credentials: "include",
-      headers: { "Content-Type": "application/json", "X-Requested-With": "grafik", ...(opts.headers || {}) },
-      ...opts,
-    });
+    res = await send();
+    // Разовий обрив між проксі й сервером (502/503/504 — зголошення #22: Caddy взяв зʼєднання, яке Node
+    // щойно закрив) — читання безпечно повторити один раз; мутації не повторюємо ніколи.
+    if (method === "GET" && (res.status === 502 || res.status === 503 || res.status === 504)) {
+      crumb(method, path, res, started);
+      await new Promise(r => setTimeout(r, 400));
+      res = await send();
+    }
   } catch (e) { crumb(method, path, null, started); throw e; }
   crumb(method, path, res, started);
   if (res.status === 401) {

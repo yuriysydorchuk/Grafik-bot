@@ -107,8 +107,10 @@ export default function Workers() {
     onError: (e: any) => toast.error(e.message),
   });
 
+  // Пошук на вкладці «Активні» знаходить і звільнених (зголошення #23: людину шукали, не знаходили й
+  // заводили дубль) — вони йдуть після активних з позначкою «звільнений» / «чорний список».
   const filtered = useMemo(() => (workers ?? []).filter(w =>
-    (mode === "blacklist" ? !!w.doNotHire : mode === "fired" ? (!w.isActive && !w.doNotHire) : mode === "all" ? !w.doNotHire : w.isActive) &&
+    (mode === "blacklist" ? !!w.doNotHire : mode === "fired" ? (!w.isActive && !w.doNotHire) : mode === "all" ? !w.doNotHire : (w.isActive || !!q.trim())) &&
     (!facFilter || String(w.factoryId) === facFilter) &&
     (!coFilter || String(w.companyId) === coFilter) &&
     (!posFilter || String(w.positionId) === posFilter) &&
@@ -130,7 +132,7 @@ export default function Workers() {
     (!expiringOnly || (() => { const d = daysUntil(w.legality?.nextExpiryAt); return d != null && d <= 30; })()) &&
     // по словах у будь-якому порядку й без діакритики («Sithole Tanatswa» знаходить «TANATSWA SITHOLE»)
     (!q || matchesQuery(q, w.fullName, w.workerCode))
-  ), [workers, q, facFilter, coFilter, posFilter, legFilter, natFilter, stud26Only, docLegFilter, umowaFilter, expiringOnly, mode]);
+  ).sort((a, b) => mode === "active" ? Number(b.isActive) - Number(a.isActive) : 0), [workers, q, facFilter, coFilter, posFilter, legFilter, natFilter, stud26Only, docLegFilter, umowaFilter, expiringOnly, mode]);
 
   if (isLoading) return <Spinner />;
 
@@ -233,7 +235,8 @@ export default function Workers() {
                     <Link href={`/workers/${w.id}`} className="text-red-700 underline-offset-2 hover:underline">{w.fullName}</Link>
                     {w.gender && <span className={`ml-1.5 font-semibold ${genderClass(w.gender)}`} title={w.gender === "male" ? t("Чоловік") : t("Жінка")}>{genderIcon(w.gender)}</span>}
                     <NatFlag value={w.nationality} className="ml-1.5 cursor-default" />
-                    {mode === "all" && !w.isActive && <span className="ml-1.5 rounded bg-rose-50 px-1.5 py-0.5 text-[10px] font-semibold text-rose-700">{t("звільнений")}</span>}
+                    {(mode === "all" || mode === "active") && !w.isActive && <span className="ml-1.5 rounded bg-rose-50 px-1.5 py-0.5 text-[10px] font-semibold text-rose-700">{t("звільнений")}</span>}
+                    {mode === "active" && !!w.doNotHire && <span className="ml-1.5 rounded bg-slate-200 px-1.5 py-0.5 text-[10px] font-semibold text-slate-700">{t("чорний список")}</span>}
                   </td>
                   <td className="px-4 py-2.5 font-mono text-slate-500">{w.workerCode ?? "—"}</td>
                   <td className="px-4 py-2.5">{w.positionName ? <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${badgeClass(w.positionColor ?? "slate")}`}><span className={`h-1.5 w-1.5 rounded-full ${dotClass(w.positionColor ?? "slate")}`} />{w.positionName}</span> : <span className="text-slate-300">—</span>}</td>

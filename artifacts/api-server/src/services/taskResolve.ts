@@ -345,11 +345,14 @@ export async function buildTaskResolution(task: Task): Promise<{ context: TaskCo
       // студент до 26 / «ZUA вже була» — docTypeCode порожній, документ не вимагається (закриття вручну)
       const p = (task.autoParams ?? {}) as { companyId?: number | null; docTypeCode?: string; contractId?: number };
       const ty = await typeByCode("zus_zua");
+      const zza = await typeByCode("zus_zza"); // ZZA (лише zdrowotne) теж закриває зголошення (#13)
       if (ty && worker && p.docTypeCode === "zus_zua") {
-        const d = workerDocs.find(x => x.d.docTypeId === ty.id && x.d.status !== "missing" && (x.d.employerCompanyId == null || p.companyId == null || x.d.employerCompanyId === p.companyId))?.d;
-        ctx.document = d ? docCtx(d, ty.name, ty.code) : null;
-        if (d) satisfied.add("entered");
-        actions.push({ code: "add_doc", label: `Внести ${ty.name}`, kind: "link", href: prof(`add-doc:${ty.id}`), primary: !d });
+        const hit = workerDocs.find(x => (x.d.docTypeId === ty.id || (zza != null && x.d.docTypeId === zza.id)) && x.d.status !== "missing" && (x.d.employerCompanyId == null || p.companyId == null || x.d.employerCompanyId === p.companyId))?.d;
+        const hitTy = hit && zza && hit.docTypeId === zza.id ? zza : ty;
+        ctx.document = hit ? docCtx(hit, hitTy.name, hitTy.code) : null;
+        if (hit) satisfied.add("entered");
+        actions.push({ code: "add_doc", label: `Внести ${ty.name}`, kind: "link", href: prof(`add-doc:${ty.id}`), primary: !hit });
+        if (zza && !hit) actions.push({ code: "add_doc_zza", label: `Внести ${zza.name}`, kind: "link", href: prof(`add-doc:${zza.id}`) });
       }
       if (worker) {
         actions.push({ code: "contracts", label: "Умови в профілі", kind: "link", href: prof("contracts") });

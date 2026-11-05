@@ -82,6 +82,7 @@ test("студент до 26 → задача «лише Gratyfikant», без �
   assert.ok(!steps.some(s => /Зголосити до ZUS/.test(s.text)));
   assert.ok(!steps.some(s => s.auto), "без auto-кроку — закриває офіс вручну");
   assert.match(t!.description ?? "", /Студент до 26: ТАК/);
+  assert.match(t!.description ?? "", /⚠ Студент до 26 — до ZUS не зголошувати/);
 
   // документ ZUA студенту задачу не закриває (вона про Gratyfikant)
   await request(app).post(`/api/workers/${w!.id}/documents`).set("Cookie", owner).set(H).send({ docTypeId: zua!.id, issuedAt: "2026-10-06" });
@@ -100,7 +101,7 @@ test("ZUA цієї фірми вже в профілі до підпису → �
   const [t] = await hireTasks(w!.id);
   assert.ok(t);
   const steps = (t!.checklist as { text: string; auto?: string }[]);
-  assert.ok(steps.some(s => /ZUA вже в профілі \(10\.01\.2026\)/.test(s.text)), steps.map(s => s.text).join(" | "));
+  assert.ok(steps.some(s => /Зголошення \(ZUA\/ZZA\) вже в профілі \(10\.01\.2026\)/.test(s.text)), steps.map(s => s.text).join(" | "));
   assert.ok(!steps.some(s => s.auto));
   assert.equal((t!.autoParams as Record<string, unknown>).docTypeCode, undefined);
 });
@@ -135,4 +136,39 @@ test("ревʼю codex: missing-рядок ZUA, заповнений після 
   const [w2] = await db.insert(workersTable).values({ fullName: "Off E", factoryId: fa!.id, companyId: co!.id, isActive: true, nationality: "ukraine", birthDate: "1991-03-03" }).returning();
   await importContract(w2!.id, fa!.id, co!.id);
   assert.equal((await hireTasks(w2!.id)).length, 0);
+});
+
+test("ZZA (лише zdrowotne) закриває задачу зголошення так само, як ZUA (зголошення #13)", opts, async () => {
+  const [co] = await db.insert(companiesTable).values({ name: "ES" }).returning();
+  const [fa] = await db.insert(factoriesTable).values({ name: "LST", companyId: co!.id }).returning();
+  const [w] = await db.insert(workersTable).values({ fullName: "Zza Tylko", factoryId: fa!.id, companyId: co!.id, isActive: true, nationality: "ukraine", birthDate: "1990-05-05" }).returning();
+  await db.insert(documentTypesTable).values({ code: "zus_zua", name: "ZUS ZUA", required: false, hasExpiry: false });
+  const [zza] = await db.insert(documentTypesTable).values({ code: "zus_zza", name: "ZUS ZZA", required: false, hasExpiry: false }).returning();
+  await importContract(w!.id, fa!.id, co!.id);
+  assert.equal((await hireTasks(w!.id))[0]!.status, "open");
+  const d = await request(app).post(`/api/workers/${w!.id}/documents`).set("Cookie", owner).set(H).send({ docTypeId: zza!.id, issuedAt: "2026-10-06" });
+  assert.equal(d.status, 200, JSON.stringify(d.body));
+  assert.equal((await hireTasks(w!.id))[0]!.status, "auto_resolved", "ZZA в профілі закриває задачу");
+});
+
+test("PATCH /workers/:id: зміна фабрики тягне фірму фабрики; multi-firm і явна фірма — без автозміни (зголошення #28)", opts, async () => {
+  const [es] = await db.insert(companiesTable).values({ name: "ES" }).returning();
+  const [eso] = await db.insert(companiesTable).values({ name: "ESO" }).returning();
+  const [a] = await db.insert(factoriesTable).values({ name: "A-ES", companyId: es!.id }).returning();
+  const [b] = await db.insert(factoriesTable).values({ name: "B-ESO", companyId: eso!.id }).returning();
+  const [multi] = await db.insert(factoriesTable).values({ name: "SUSHI", companyId: es!.id, multiFirm: true } as any).returning();
+  const [w] = await db.insert(workersTable).values({ fullName: "Firma Za Fabryka", factoryId: a!.id, companyId: es!.id, isActive: true }).returning();
+  const patch = (body: object) => request(app).patch(`/api/workers/${w!.id}`).set("Cookie", owner).set(H).send(body);
+
+  const r1 = await patch({ factoryId: b!.id });
+  assert.equal(r1.status, 200, JSON.stringify(r1.body));
+  assert.deepEqual([r1.body.companyId, r1.body.autoCompany], [eso!.id, { id: eso!.id, name: "ESO" }], "фірма нової фабрики");
+  // та сама фабрика ще раз — нічого не міняємо
+  assert.equal((await patch({ factoryId: b!.id })).body.autoCompany, null);
+  // multi-firm фабрика — фірму вибирають самі
+  const r3 = await patch({ factoryId: multi!.id });
+  assert.deepEqual([r3.body.companyId, r3.body.autoCompany], [eso!.id, null]);
+  // явно вказана інша фірма в тому ж збереженні — поважаємо її
+  const r4 = await patch({ factoryId: a!.id, companyId: eso!.id });
+  assert.deepEqual([r4.body.companyId, r4.body.autoCompany], [eso!.id, null], "фірму передано явно (форма редагування) — лишається вибрана");
 });

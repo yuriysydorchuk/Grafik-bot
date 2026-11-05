@@ -121,7 +121,7 @@ export function FeedbackAnnotator({ src, open, onClose, onDone }: {
   const textPos = pendingText && canvasRef.current ? (() => { const c = canvasRef.current!; const r = c.getBoundingClientRect(); const pr = c.parentElement!.getBoundingClientRect(); return { left: (pendingText.x / c.width) * r.width + (r.left - pr.left), top: (pendingText.y / c.height) * r.height + (r.top - pr.top) }; })() : null;
 
   return (
-    <Modal open={open} onClose={onClose} title={t("Скріншот: позначте, що не так")} size="xl">
+    <Modal open={open} onClose={onClose} title={t("Скріншот: позначте, що не так")} size="xl" zClass="z-[80]">
       <div className="mb-3 flex flex-wrap items-center gap-1.5">
         {tools.map(x => (
           <button key={x.id} onClick={() => setTool(x.id)} className={cn("inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium", tool === x.id ? "border-red-600 bg-red-600 text-white" : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50")}>{x.icon}{x.label}</button>

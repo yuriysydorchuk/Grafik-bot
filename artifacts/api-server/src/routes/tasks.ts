@@ -62,9 +62,13 @@ async function decorate(rows: (typeof tasksTable.$inferSelect)[]) {
     .from(taskAssigneesTable).leftJoin(adminsTable, eq(taskAssigneesTable.adminId, adminsTable.id)).where(inArray(taskAssigneesTable.taskId, groupIds)) : [];
   const byTask = new Map<number, typeof parts>();
   for (const p of parts) { const l = byTask.get(p.taskId) ?? []; l.push(p); byTask.set(p.taskId, l); }
+  // лічильник коментарів — «💬 N» на картці й у списку (зголошення #27)
+  const cCount = new Map((await db.select({ taskId: taskCommentsTable.taskId, n: sql<number>`count(*)::int` }).from(taskCommentsTable)
+    .where(inArray(taskCommentsTable.taskId, groupIds)).groupBy(taskCommentsTable.taskId)).map(r => [r.taskId, r.n]));
   const today = warsawToday();
   return rows.map(t => ({
     ...t, dueAt: dateStr(t.dueAt), plannedFor: dateStr(t.plannedFor), snoozedUntil: dateStr(t.snoozedUntil),
+    commentCount: cCount.get(t.id) ?? 0,
     assigneeName: t.assigneeAdminId ? aName.get(t.assigneeAdminId) ?? null : null,
     creatorName: t.creatorAdminId ? aName.get(t.creatorAdminId) ?? null : "Система",
     completedByName: t.completedById ? aName.get(t.completedById) ?? null : null,

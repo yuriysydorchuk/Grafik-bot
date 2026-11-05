@@ -48,17 +48,19 @@ async function umowaContracts(contractIds: number[]) {
   return rows.filter(r => withUmowa.has(r.id) || (r.data as Record<string, unknown> | null)?.imported === true);
 }
 
-async function zuaType() {
-  const [ty] = await db.select({ id: documentTypesTable.id }).from(documentTypesTable).where(eq(documentTypesTable.code, "zus_zua"));
-  return ty ?? null;
+// Зголошення до ZUS — це ZUA (повне) або ZZA (лише zdrowotne): обидва документи закривають задачу
+// «зголосити нового працівника» і рахуються як «вже зголошений» (зголошення #13, відповідь автора 04.11.2026)
+export const ZUS_REGISTRATION_CODES = ["zus_zua", "zus_zza"] as const;
+export async function zusRegistrationTypeIds(): Promise<number[]> {
+  return (await db.select({ id: documentTypesTable.id }).from(documentTypesTable).where(inArray(documentTypesTable.code, [...ZUS_REGISTRATION_CODES]))).map(t => t.id);
 }
 
-// Документи ZUA працівника (крім missing) — для «вже в профілі» при створенні й для авторезолву.
+// Документи зголошення (ZUA/ZZA) працівника (крім missing) — для «вже в профілі» при створенні й для авторезолву.
 async function zuaDocs(workerId: number) {
-  const ty = await zuaType();
-  if (!ty) return [];
+  const tys = await zusRegistrationTypeIds();
+  if (!tys.length) return [];
   return db.select({ id: workerDocumentsTable.id, createdAt: workerDocumentsTable.createdAt, companyId: workerDocumentsTable.employerCompanyId, issuedAt: workerDocumentsTable.issuedAt, submittedAt: workerDocumentsTable.submittedAt })
-    .from(workerDocumentsTable).where(and(eq(workerDocumentsTable.workerId, workerId), eq(workerDocumentsTable.docTypeId, ty.id), ne(workerDocumentsTable.status, "missing")));
+    .from(workerDocumentsTable).where(and(eq(workerDocumentsTable.workerId, workerId), inArray(workerDocumentsTable.docTypeId, tys), ne(workerDocumentsTable.status, "missing")));
 }
 
 // Чинні (підписані працівником або обома) умови-umowa працівника з цією фірмою — для «ще є що зголошувати».
@@ -111,8 +113,10 @@ export async function startHireRegistrationFlow(contractIds: number[], actorAdmi
         : "";
       const description = [
         `Умова${coLabel ? ` з ${coLabel}` : ""}${c.factoryName ? ` на ${c.factoryName}` : ""} (${period}) підписана обома сторонами.${signedWhen}`,
-        `Статус для виплат: ${w.legalStatus ?? "—"} (${srcLabel}). Студент до 26: ${student26 ? "ТАК — до ZUS не зголошувати, лише Gratyfikant" : "ні"}.`,
-        zuaAt ? `ZUS ZUA${coLabel ? ` (${coLabel})` : ""} уже є в профілі від ${fmtDate(zuaAt)} — повторно не подавати, лише перевірити.` : null,
+        `Статус для виплат: ${w.legalStatus ?? "—"} (${srcLabel}). Студент до 26: ${student26 ? "ТАК" : "ні"}.`,
+        // рядки з «⚠ » — важливе, веб показує їх виділено (зголошення #13)
+        student26 ? "⚠ Студент до 26 — до ZUS не зголошувати, лише Gratyfikant." : null,
+        zuaAt ? `⚠ Зголошення до ZUS (ZUA/ZZA)${coLabel ? ` — ${coLabel}` : ""} уже є в профілі від ${fmtDate(zuaAt)} — повторно не подавати, лише перевірити.` : null,
       ].filter(Boolean).join("\n");
 
       const steps: { text: string; auto?: string }[] = [
@@ -120,10 +124,10 @@ export async function startHireRegistrationFlow(contractIds: number[], actorAdmi
         { text: "Перевірити документи: паспорт, підстава перебування/праці, анкета (PESEL, адреса, рахунок, NFZ)" },
       ];
       if (student26) steps.push({ text: "Студент до 26 — до ZUS НЕ зголошувати (без składek)" });
-      else if (zuaAt) steps.push({ text: `ZUA вже в профілі (${fmtDate(zuaAt)}) — перевірити, що зголошення чинне` });
+      else if (zuaAt) steps.push({ text: `Зголошення (ZUA/ZZA) вже в профілі (${fmtDate(zuaAt)}) — перевірити, що воно чинне` });
       else steps.push({ text: `Зголосити до ZUS (ZUA${coLabel ? `, ${coLabel}` : ""}) — Płatnik / PUE ZUS` });
       steps.push({ text: "Додати працівника в Gratyfikant nexo" });
-      if (!student26 && !zuaAt) steps.push({ text: "Внести підтвердження ZUA в профіль", auto: "entered" });
+      if (!student26 && !zuaAt) steps.push({ text: "Внести підтвердження ZUA (або ZZA) в профіль", auto: "entered" });
 
       const title = student26
         ? `Новий працівник — студент до 26, лише Gratyfikant${coLabel ? ` (${coLabel})` : ""}: ${raw.fullName}`

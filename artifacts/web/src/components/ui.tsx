@@ -131,7 +131,8 @@ export function Empty({ children }: { children: ReactNode }) {
   );
 }
 
-export function Modal({ open, onClose, title, children, size = "md" }: { open: boolean; onClose: () => void; title: string; children: ReactNode; size?: "md" | "lg" | "xl" | "2xl" }) {
+// zClass — шар оверлея (типово z-50); вище — лише поверхні, що мусять лягати НАД віджетом зголошень (анотатор скріншота)
+export function Modal({ open, onClose, title, children, size = "md", zClass = "z-50" }: { open: boolean; onClose: () => void; title: string; children: ReactNode; size?: "md" | "lg" | "xl" | "2xl"; zClass?: "z-50" | "z-[80]" }) {
   useEffect(() => {
     const h = (e: KeyboardEvent) => e.key === "Escape" && onClose();
     if (open) window.addEventListener("keydown", h);
@@ -153,7 +154,7 @@ export function Modal({ open, onClose, title, children, size = "md" }: { open: b
   // оверлея робить його containing block для fixed-нащадків, і вкладене
   // fixed inset-0 «їде» разом зі скролом батьківської панелі за межі екрана.
   return createPortal(
-    <div className={`fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/40 ${overlay} backdrop-blur-[2px] animate-fade-in`}
+    <div className={`fixed inset-0 ${zClass} flex items-start justify-center overflow-y-auto bg-slate-900/40 ${overlay} backdrop-blur-[2px] animate-fade-in`}
       onMouseDown={e => { downOnBackdrop.current = e.target === e.currentTarget; }}
       onClick={e => { if (downOnBackdrop.current && e.target === e.currentTarget) onClose(); }}>
       <div className={`w-full ${maxW} ${panel} bg-white shadow-xl ring-1 ring-slate-900/5 animate-pop-in`} onClick={e => e.stopPropagation()}>

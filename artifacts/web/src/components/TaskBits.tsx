@@ -53,6 +53,7 @@ export function TaskCard({ t, onOpen, draggable, onDragStart, compact }: { t: Ta
         {t.kind === "meeting" && <span className="rounded-full bg-indigo-50 px-1.5 py-0.5 font-semibold text-indigo-700">🗓 {tr("зустріч")}</span>}
         {t.kind === "group" && <span className="rounded-full bg-teal-50 px-1.5 py-0.5 font-semibold text-teal-700">👥 {t.assignees.filter(a => a.status === "done").length}/{t.assignees.length}</span>}
         {t.recurrence && <Repeat className="h-3 w-3 text-slate-400" />}
+        {!!t.commentCount && <span className="rounded-full bg-amber-100 px-1.5 py-0.5 font-semibold text-amber-700" title={tr("Коментарі")}>💬 {t.commentCount}</span>}
       </div>
       <div className={cn("mt-1 text-sm font-semibold text-slate-800", t.status === "done" && "line-through decoration-slate-300")}>{t.title}</div>
       {!compact && (t.worker || t.factoryName) && (
@@ -119,7 +120,7 @@ export function TaskDrawer({ id, onClose }: { id: number; onClose: () => void })
         <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4 text-sm">
           <div>
             <div className="text-lg font-bold leading-snug text-slate-800">{t.title}</div>
-            {t.description && <div className="mt-1 whitespace-pre-wrap text-slate-600">{t.description}</div>}
+            {t.description && <TaskDescription text={t.description} />}
             {t.source !== "manual" && !t.resolution?.context.why && <div className="mt-1 text-xs text-slate-400">{tr("Створено системою")} · {tr("закриється сама, коли причина зникне")}</div>}
           </div>
 
@@ -255,9 +256,10 @@ export function TaskDrawer({ id, onClose }: { id: number; onClose: () => void })
 
           {/* коментарі */}
           <div>
-            <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">{tr("Коментарі")}</div>
+            <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">{tr("Коментарі")}{t.comments.length > 0 && <span className="ml-1.5 rounded-full bg-amber-100 px-1.5 py-0.5 text-amber-700">💬 {t.comments.length}</span>}</div>
             <div className="space-y-2">
-              {t.comments.map(c => <div key={c.id} className="rounded-lg border border-slate-100 p-2"><div className="text-[10px] text-slate-400">{c.name} · {new Date(c.createdAt).toLocaleString("uk-UA")}</div><div className="whitespace-pre-wrap">{c.body}</div>{c.attachments && c.attachments.length > 0 && <div className="mt-1 flex flex-wrap gap-2">{c.attachments.map((a, i) => a.mime.startsWith("image/") ? <a key={i} href={`/api/tasks/${id}/attachments/${c.id}/${i}`} target="_blank" rel="noreferrer"><img src={`/api/tasks/${id}/attachments/${c.id}/${i}`} alt={a.name} className="h-20 rounded border border-slate-200 object-cover" /></a> : <a key={i} href={`/api/tasks/${id}/attachments/${c.id}/${i}`} target="_blank" rel="noreferrer" className="rounded border border-slate-200 px-2 py-0.5 text-xs text-blue-600 hover:underline">📎 {a.name}</a>)}</div>}</div>)}
+              {/* коментар — те, що людина дописала до задачі руками: жовта смуга, щоб не губився серед сірого (зголошення #27) */}
+              {t.comments.map(c => <div key={c.id} className="rounded-lg border border-amber-200 border-l-4 border-l-amber-400 bg-amber-50 p-2"><div className="text-[10px] font-semibold text-amber-700">{c.name} <span className="font-normal text-slate-400">· {new Date(c.createdAt).toLocaleString("uk-UA")}</span></div><div className="whitespace-pre-wrap text-slate-800">{c.body}</div>{c.attachments && c.attachments.length > 0 && <div className="mt-1 flex flex-wrap gap-2">{c.attachments.map((a, i) => a.mime.startsWith("image/") ? <a key={i} href={`/api/tasks/${id}/attachments/${c.id}/${i}`} target="_blank" rel="noreferrer"><img src={`/api/tasks/${id}/attachments/${c.id}/${i}`} alt={a.name} className="h-20 rounded border border-slate-200 object-cover" /></a> : <a key={i} href={`/api/tasks/${id}/attachments/${c.id}/${i}`} target="_blank" rel="noreferrer" className="rounded border border-slate-200 px-2 py-0.5 text-xs text-blue-600 hover:underline">📎 {a.name}</a>)}</div>}</div>)}
               {mentionHint.length > 0 && <div className="flex flex-wrap gap-1">{mentionHint.map(a => <button key={a.id} onClick={() => setComment(c => c.replace(/@([^\s@]*)$/, `@${a.name.split(" ")[0]} `))} className="rounded-full bg-indigo-50 px-2 py-0.5 text-xs text-indigo-700">@{a.name}</button>)}</div>}
               {files.length > 0 && <div className="flex flex-wrap gap-1 text-xs">{files.map((f, i) => <span key={i} className="rounded-full bg-slate-100 px-2 py-0.5">📎 {f.name}<button onClick={() => setFiles(l => l.filter((_, j) => j !== i))} className="ml-1 text-slate-400">✕</button></span>)}</div>}
               <div className="flex gap-2"><Input value={comment} onChange={e => setComment(e.target.value)} placeholder={tr("Коментар… (@імʼя — згадати)")} onKeyDown={e => { if (e.key === "Enter" && (comment.trim() || files.length)) addComment.mutate(); }} /><label className="cursor-pointer rounded-lg border border-slate-200 px-2 py-1.5 text-slate-500 hover:bg-slate-50" title={tr("Прикріпити фото або PDF")}><input type="file" multiple accept="image/*,application/pdf" className="hidden" onChange={e => { setFiles(l => [...l, ...Array.from(e.target.files ?? [])]); e.target.value = ""; }} />📎</label><Button variant="secondary" className="px-2.5" disabled={!comment.trim()} onClick={() => addComment.mutate()}><Send className="h-4 w-4" /></Button></div>
@@ -608,6 +610,25 @@ function ResolveBlock({ task, inv }: { task: TaskDetail; inv: () => void }) {
       )}
       {passportDiff && <PassportAnketaSyncModal diff={passportDiff} applying={run.isPending}
         onApply={() => run.mutate({ code: `passport_to_anketa.${passportDiff.documentId}` })} onClose={() => setPassportDiff(null)} />}
+    </div>
+  );
+}
+
+// Опис задачі рядками (зголошення #13: раніше суцільний сірий текст, важливе губилось):
+//   «⚠ …» (так сервер позначає важливе) або рядок-застереження зі старих задач — жовта плашка;
+//   «Назва: значення» — значення жирним (дати звільнення / виреєстрування з ZUS видно одразу).
+const WARN_LINE = /не потрібн|не зголошувати|повторно не подавати/i;
+function TaskDescription({ text }: { text: string }) {
+  return (
+    <div className="mt-1 space-y-0.5 text-slate-600">
+      {text.split("\n").map((line, i) => {
+        const raw = line.trim();
+        if (!raw) return <div key={i} className="h-1" />;
+        if (raw.startsWith("⚠") || WARN_LINE.test(raw)) return <div key={i} className="rounded-md border border-amber-200 bg-amber-50 px-2 py-1 font-semibold text-amber-800">{raw.startsWith("⚠") ? raw : `⚠ ${raw}`}</div>;
+        const m = /^([^:.]{2,60}):\s+(.+)$/.exec(raw);
+        if (m) return <div key={i} className="whitespace-pre-wrap">{m[1]}: <b className="text-slate-900">{m[2]}</b></div>;
+        return <div key={i} className="whitespace-pre-wrap">{raw}</div>;
+      })}
     </div>
   );
 }

@@ -42,7 +42,7 @@ async function main() {
       .finally(() => process.exit(1));
   });
 
-  app.listen(port, async (err) => {
+  const server = app.listen(port, async (err) => {
     if (err) {
       logger.error({ err }, "Error listening on port");
       process.exit(1);
@@ -84,6 +84,11 @@ async function main() {
     // Startup alert (no-op unless ALERTS_ENABLED=true) — surfaces pm2 restarts.
     void sendStartupAlert();
   });
+  // Caddy тримає зʼєднання до нас відкритими до 2 хв (reverse_proxy keepalive), а Node за замовчуванням
+  // закриває простійне через 5 с: запит, що летів саме в цю мить, діставав «connection reset» → 502
+  // (зголошення #22). Тримаємо довше за проксі; headersTimeout мусить бути більшим за keepAliveTimeout.
+  server.keepAliveTimeout = 125_000;
+  server.headersTimeout = 130_000;
 
   // Graceful shutdown
   process.once("SIGINT", () => {

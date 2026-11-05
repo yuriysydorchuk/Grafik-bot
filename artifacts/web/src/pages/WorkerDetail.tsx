@@ -161,8 +161,12 @@ export default function WorkerDetail() {
   const [renaming, setRenaming] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
   const wpatch = useMutation({
-    mutationFn: (p: Record<string, unknown>) => patch(`/workers/${id}`, p),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["worker", id] }); qc.invalidateQueries({ queryKey: ["workers"] }); qc.invalidateQueries({ queryKey: ["worker-changes"] }); },
+    mutationFn: (p: Record<string, unknown>) => patch<{ autoCompany?: { id: number; name: string } | null }>(`/workers/${id}`, p),
+    onSuccess: (r) => {
+      qc.invalidateQueries({ queryKey: ["worker", id] }); qc.invalidateQueries({ queryKey: ["workers"] }); qc.invalidateQueries({ queryKey: ["worker-changes"] });
+      // нова фабрика належить іншій фірмі — сервер перевів і фірму (зголошення #28)
+      if (r?.autoCompany) toast.info(t("Фірму змінено на {name} — це фірма нової фабрики", { name: r.autoCompany.name }));
+    },
     onError: (e: any) => toast.error(e.message),
   });
   // повернення звільненого прямо з профілю (той самий POST, що й у списку)
@@ -1667,11 +1671,15 @@ function ContractRow({ c, workerId, onSaved, newVersion, archived, showTarget }:
   const st = CONTRACT_STATUS[c.status] ?? CONTRACT_STATUS.draft!;
   const terminal = ["signed", "cancelled", "superseded", "expired", "declined"].includes(c.status);
   // дати можна дописати/змінити на будь-якому «живому» статусі, включно з підписаною умовою (бекенд: DEAD = declined/cancelled/superseded/expired)
-  const canEditDates = !archived && !["cancelled", "superseded", "expired", "declined"].includes(c.status);
+  // В архіві дати правляться лише в ПІДПИСАНОЇ умови (зголошення #25: умова звільненого одразу в архіві, і
+  // неправильну дату початку/кінця вже не можна було виправити, хоча сервер це дозволяє); подієві
+  // документи архіву (zaświadczenie, аннекс) не чіпаємо — їхня дата зашита в PDF.
+  const isEvent = !!(c.data?._forContractId || c.data?._extendsContractId);
+  const canEditDates = (!archived || (c.status === "signed" && !isEvent)) && !["cancelled", "superseded", "expired", "declined"].includes(c.status);
   const cancelMut = useMutation({ mutationFn: (id: number) => post(`/contracts/${id}/cancel`), onSuccess: () => { onSaved(); toast.success(t("Скасовано")); }, onError: (e: any) => toast.error(e.message) });
   const [annexOpen, setAnnexOpen] = useState(false);
   const [termOpen, setTermOpen] = useState(false); // виповідзення на умові
-  const isEventDoc = !!(c.data?._forContractId || c.data?._extendsContractId);
+  const isEventDoc = isEvent;
   const clearTerm = useMutation({ mutationFn: () => del(`/contracts/${c.id}/termination`), onSuccess: () => { onSaved(); toast.success(t("Виповідзення скасовано")); }, onError: (e: any) => toast.error(e.message) });
   const finalize = useMutation({ mutationFn: (id: number) => post(`/contracts/${id}/finalize`), onSuccess: () => { onSaved(); toast.success(t("Підписано від компанії — пакет завершено")); }, onError: (e: any) => toast.error(e.message) });
   const send = useMutation({
@@ -2651,7 +2659,8 @@ const SLOT_CODES = new Set<string>(["passport", "pesel", ...WIZA_CODES, ...KARTA
 type DocRowState =
   | { kind: "notneeded" }
   | { kind: "empty"; requestedDoc: WorkerDocument | null }
-  | { kind: "doc"; doc: WorkerDocument; type: DocumentType | null; expiresAt: string | null; indefinite: boolean; expired: boolean; pending: boolean };
+  // requested — рядок «запитано в працівника», файлу ще немає (status=missing): це не документ, а очікування
+  | { kind: "doc"; doc: WorkerDocument; type: DocumentType | null; expiresAt: string | null; indefinite: boolean; expired: boolean; pending: boolean; requested?: boolean };
 
 // Найкращий документ слоту серед кодів: чинний (найпізніший строк) > прострочений
 // (найпізніший) > на перевірці > запрошений (status=missing з POST .../request,
@@ -2713,14 +2722,20 @@ function otherDocState(doc: WorkerDocument, type: DocumentType | null, globals?:
   const pending = doc.status === "pending";
   const expired = !pending && (doc.status === "expired" || isExpired(expiresAt));
   const indefinite = !!type && !type.hasExpiry && !expiresAt;
-  return { kind: "doc", doc, type, expiresAt, indefinite, expired, pending };
+  // запит без файлу (зголошення #18): раніше такий рядок світився зеленим «безстроково / справа в toku»,
+  // ніби документ уже є — тепер жовтий «немає · запитано»
+  const requested = doc.status === "missing" && !doc.fileName && !doc.fileUrl;
+  return { kind: "doc", doc, type, expiresAt, indefinite, expired, pending, requested };
 }
 
 const fmtDocDate = (d: string) => `${d.slice(8, 10)}.${d.slice(5, 7)}.${d.slice(0, 4)}`;
 const fmtShortDate = (d: string) => `${d.slice(8, 10)}.${d.slice(5, 7)}`;
-const DOC_TONE_CLS = { ok: "text-green-600", soon: "text-yellow-600", urgent: "text-rose-600", expired: "text-rose-600", pending: "text-blue-600", muted: "text-slate-400", warn: "text-amber-600" } as const;
+const DOC_TONE_CLS = { ok: "text-green-600", soon: "text-yellow-600", urgent: "text-rose-600", expired: "text-rose-600", pending: "text-blue-600", muted: "text-slate-400", warn: "text-amber-600", requested: "text-amber-600" } as const;
+// «запитано, чекаємо файл» — жовта плашка (і в порожніх слотах, і в рядках інших типів)
+const REQUESTED_PILL = "rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700";
 
 function docTone(s: Extract<DocRowState, { kind: "doc" }>): keyof typeof DOC_TONE_CLS {
+  if (s.requested) return "requested";
   if (s.pending) return "pending";
   if (s.expired) return "expired";
   if (s.indefinite) return "ok"; // безстроковий і підтверджений — зелений, як чинний паспорт (23.10.2026)
@@ -2792,11 +2807,11 @@ function DocRow({ icon: Icon, label, subLabel, state, canLegal, companies, reque
     return (
       <div className="border-b border-slate-50 px-4 py-2 text-sm last:border-0">
         <div className="flex items-center gap-2">
-          <Icon className="h-4 w-4 shrink-0 text-slate-300" />
+          <Icon className={`h-4 w-4 shrink-0 ${requestedAt ? "text-amber-500" : "text-slate-300"}`} />
           <span className="font-medium text-slate-500">{label}</span>
           <span className="ml-auto flex items-center gap-2">
             <span className="text-xs text-slate-400">{t("немає")}</span>
-            {requestedAt && <span className="text-xs font-medium text-blue-600" title={state.requestedDoc?.requestedBy == null ? t("автозапит системи в бот") : t("запит офісу")}>{t("запрошено {date}", { date: fmtShortDate(requestedAt) })}{state.requestedDoc?.requestedBy == null ? " 🤖" : ""}{(state.requestedDoc?.requestRemindCount ?? 0) > 0 ? ` · ${t("нагад.")} ${state.requestedDoc!.requestRemindCount}` : ""}</span>}
+            {requestedAt && <span className={REQUESTED_PILL} title={state.requestedDoc?.requestedBy == null ? t("автозапит системи в бот") : t("запит офісу")}>{t("запрошено {date}", { date: fmtShortDate(requestedAt) })}{state.requestedDoc?.requestedBy == null ? " 🤖" : ""}{(state.requestedDoc?.requestRemindCount ?? 0) > 0 ? ` · ${t("нагад.")} ${state.requestedDoc!.requestRemindCount}` : ""}</span>}
             <span className="flex items-center gap-0.5">
               {onScan && <button type="button" onClick={onScan} className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700" title={scanTitle ?? t("Сканувати карту")}><ScanLine className="h-3.5 w-3.5" /></button>}
               {onAdd && onAuto ? <SlotAddMenu onAdd={onAdd} onAuto={onAuto} />
@@ -2813,7 +2828,8 @@ function DocRow({ icon: Icon, label, subLabel, state, canLegal, companies, reque
   const tone = docTone(state);
   const toneCls = DOC_TONE_CLS[tone];
   const dLeft = state.expiresAt ? daysUntil(state.expiresAt) : null;
-  const stateText = state.pending ? t("⏳ на перевірці")
+  const stateText = state.requested ? (doc.requestedAt ? `${t("немає")} · ${t("запрошено {date}", { date: fmtShortDate(doc.requestedAt) })}${doc.requestedBy == null ? " 🤖" : ""}${(doc.requestRemindCount ?? 0) > 0 ? ` · ${t("нагад.")} ${doc.requestRemindCount}` : ""}` : t("немає файлу"))
+    : state.pending ? t("⏳ на перевірці")
     : state.expired ? (state.expiresAt ? t("прострочено {date}", { date: fmtDocDate(state.expiresAt) }) : t("прострочено")) // статус expired без дати (справа/ZWUA) — без null.slice
     : state.indefinite && type?.code === "zus_zwua" ? ((doc.issuedAt ?? doc.expiresAt) ? t("виреєстровано {date}", { date: fmtDocDate((doc.issuedAt ?? doc.expiresAt)!) }) : t("дата не вказана"))
     : state.indefinite && (type?.code === "zus_zua" || type?.code === "zus_zza") ? ((doc.issuedAt ?? doc.expiresAt) ? t("зголошено {date} · чинне до ZWUA", { date: fmtDocDate((doc.issuedAt ?? doc.expiresAt)!) }) : t("дата не вказана"))
@@ -2844,7 +2860,7 @@ function DocRow({ icon: Icon, label, subLabel, state, canLegal, companies, reque
         {doc.fileUrl && <a href={doc.fileUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-0.5 text-xs text-red-600 hover:underline">{t("посилання")} <ExternalLink className="h-3 w-3" /></a>}
         {doc.note && <span className="truncate text-xs text-slate-400" title={doc.note}>📝 {doc.note}</span>}
         <span className="ml-auto flex shrink-0 items-center gap-2">
-          <span className={`text-xs font-medium ${toneCls}`}>{stateText}</span>
+          <span className={state.requested ? REQUESTED_PILL : `text-xs font-medium ${toneCls}`}>{stateText}</span>
           <span className="flex items-center gap-0.5">
             {canLegal && doc.status === "pending" && onVerify && onReject && (
               <>
@@ -2972,7 +2988,7 @@ function DocSlotList({ types, docs, companies, employers, nationality, requiresS
   // підтверджені документи (чинні), потім на перевірці, прострочені, порожні слоти, «не потрібно».
   // Усередині групи — сталий порядок слотів (sort стабільний).
   type SlotRow = { state: DocRowState; node: React.ReactNode };
-  const rank = (st: DocRowState) => st.kind === "doc" ? (st.pending ? 1 : st.expired ? 2 : 0) : st.kind === "empty" ? 3 : 4;
+  const rank = (st: DocRowState) => st.kind === "doc" ? (st.requested ? 3 : st.pending ? 1 : st.expired ? 2 : 0) : st.kind === "empty" ? 3 : 4;
   const passport = fixedSlot("passport", t("Paszport"), onScanPassport, t("Сканувати паспорт"));
   const rows: SlotRow[] = [];
   const add = (r: SlotRow | null | false) => { if (r) rows.push(r); };
