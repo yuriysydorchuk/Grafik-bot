@@ -3,6 +3,7 @@
 // Окремий вузький API, щоб людина з легалізації вела ці поля без права editData на весь довідник;
 // білі списки полів — лише те, що потрібно повідомленню.
 import fs from "node:fs";
+import { parseKzis } from "../lib/kzis";
 import path from "node:path";
 import multer from "multer";
 import { Router, type IRouter } from "express";
@@ -21,8 +22,9 @@ const int = (v: unknown): number | null => { if (v === undefined || v === null |
 const idOf = (v: string | string[]): number | null => { const n = Number(Array.isArray(v) ? v[0] : v); return Number.isInteger(n) && n > 0 ? n : null; };
 // PKD роботи на фабриці (3.1): «10.39.Z» / «1039Z» → «1039Z»; порожньо → null
 const pkd = (v: unknown): string | null => { const k = String(v ?? "").replace(/[^0-9A-Za-z]/g, "").toUpperCase(); if (!k) return null; if (!/^\d{4}[A-Z]$/.test(k)) throw new Error("Код PKD — 4 цифри й літера, напр. 1039Z"); return k; };
-// KZiS: порожньо → null; інакше рівно 6 цифр, інакше помилка (обрізання/доповнення дало б інший код)
-const kzis = (v: unknown): string | null => { const k = String(v ?? "").trim(); if (!k) return null; if (!/^\d{6}$/.test(k)) throw new Error("Код KZiS — рівно 6 цифр"); return k; };
+// KZiS: порожньо → null; інакше рівно 6 цифр і код з чинної класифікації (lib/kzis.ts, зголошення #26);
+// current — вже збережене значення: його можна «зберегти ще раз», навіть якщо воно зі старої класифікації
+const kzis = parseKzis;
 
 router.get("/praca-gov/reference", async (_req: AuthedRequest, res) => {
   const [cos, fas, fps, pos] = await Promise.all([
@@ -56,7 +58,10 @@ router.patch("/praca-gov/reference/factory/:id", async (req: AuthedRequest, res)
   const id = idOf(req.params.id); if (!id) return fail(res, 400, "Невірний id");
   const b = req.body ?? {}; const patch: Record<string, unknown> = {};
   for (const k of ["addrPostalCode", "addrWojewodztwo", "addrPowiat", "addrGmina", "addrMiejscowosc", "addrStreet", "addrHouseNo", "addrAptNo", "uaStanowisko"] as const) if (b[k] !== undefined) patch[k] = str(b[k]);
-  try { if (b.uaKzisCode !== undefined) patch.uaKzisCode = kzis(b.uaKzisCode); if (b.uaPkd !== undefined) patch.uaPkd = pkd(b.uaPkd); } catch (e: any) { return fail(res, 400, e.message); }
+  try {
+    if (b.uaKzisCode !== undefined) { const [cur] = await db.select({ k: factoriesTable.uaKzisCode }).from(factoriesTable).where(eq(factoriesTable.id, id)); patch.uaKzisCode = kzis(b.uaKzisCode, cur?.k); }
+    if (b.uaPkd !== undefined) patch.uaPkd = pkd(b.uaPkd);
+  } catch (e: any) { return fail(res, 400, e.message); }
   // години в повідомленні (3.6, umowa zlecenie) — на місяць: 1…744 (31×24), порожньо = не задано
   try { if (b.uaNotifyHours !== undefined) { const h = int(b.uaNotifyHours); if (h != null && (h < 1 || h > 744)) throw new Error("Години на місяць — від 1 до 744"); patch.uaNotifyHours = h; } } catch (e: any) { return fail(res, 400, e.message); }
   if (!Object.keys(patch).length) return fail(res, 400, "Нема полів");
@@ -68,7 +73,9 @@ router.patch("/praca-gov/reference/factory/:id/position/:positionId", async (req
   const fid = idOf(req.params.id), pid = idOf(req.params.positionId); if (!fid || !pid) return fail(res, 400, "Невірний id");
   const b = req.body ?? {}; const patch: Record<string, unknown> = {};
   if (b.uaStanowisko !== undefined) patch.uaStanowisko = str(b.uaStanowisko);
-  try { if (b.kzisCode !== undefined) patch.kzisCode = kzis(b.kzisCode); } catch (e: any) { return fail(res, 400, e.message); }
+  try {
+    if (b.kzisCode !== undefined) { const [cur] = await db.select({ k: factoryPositionsTable.kzisCode }).from(factoryPositionsTable).where(and(eq(factoryPositionsTable.factoryId, fid), eq(factoryPositionsTable.positionId, pid))); patch.kzisCode = kzis(b.kzisCode, cur?.k); }
+  } catch (e: any) { return fail(res, 400, e.message); }
   if (!Object.keys(patch).length) return fail(res, 400, "Нема полів");
   const r = await db.update(factoryPositionsTable).set(patch).where(and(eq(factoryPositionsTable.factoryId, fid), eq(factoryPositionsTable.positionId, pid))).returning({ id: factoryPositionsTable.id });
   if (!r.length) return fail(res, 404, "Посада не привʼязана до фабрики");
@@ -79,7 +86,8 @@ router.patch("/praca-gov/reference/position/:id", async (req: AuthedRequest, res
   const id = idOf(req.params.id); if (!id) return fail(res, 400, "Невірний id");
   const b = req.body ?? {};
   if (b.kzisCode === undefined) return fail(res, 400, "Нема полів");
-  let code: string | null; try { code = kzis(b.kzisCode); } catch (e: any) { return fail(res, 400, e.message); }
+  const [cur] = await db.select({ k: positionsTable.kzisCode }).from(positionsTable).where(eq(positionsTable.id, id));
+  let code: string | null; try { code = kzis(b.kzisCode, cur?.k); } catch (e: any) { return fail(res, 400, e.message); }
   await db.update(positionsTable).set({ kzisCode: code }).where(eq(positionsTable.id, id));
   ok(res, { ok: true });
 });

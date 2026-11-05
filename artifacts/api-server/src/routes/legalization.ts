@@ -6,6 +6,7 @@
 // Payroll-інваріант: тут НЕМАЄ жодного запису у workers.* — лише worker_documents,
 // legal_rules, worker_legality (кеш) і document_audit.
 import { Router, type IRouter } from "express";
+import { parseKzis } from "../lib/kzis";
 import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import {
   db, workersTable, workerDocumentsTable, documentTypesTable, legalRulesTable, workerLegalityTable, workerChangesTable,
@@ -422,7 +423,9 @@ router.patch("/worker-documents/:id/legal", LG, async (req, res) => {
         if (v !== null && typeof v !== ALLOWED[k]) return fail(res, 400, `attrs.${k}: очікується ${ALLOWED[k]}`);
         if (v !== null && ENUMS[k] && !ENUMS[k].includes(String(v))) return fail(res, 400, `attrs.${k}: одне з ${ENUMS[k].join("|")}`);
         if (k === "dateFromActual" && v !== null && !isDate(v)) return fail(res, 400, "attrs.dateFromActual: формат YYYY-MM-DD");
-        if (k === "kzis" && v !== null && !/^\d{6}$/.test(String(v))) return fail(res, 400, "attrs.kzis: рівно 6 цифр");
+        if (k === "kzis" && v !== null && v !== "") { // код з чинної класифікації; уже збережений (стара класифікація) можна лишити
+          try { parseKzis(v, typeof merged.kzis === "string" ? merged.kzis : null); } catch (e: any) { return fail(res, 400, `attrs.kzis: ${e.message}`); }
+        }
         if (k === "hoursPerMonth" && v !== null && (!Number.isInteger(v) || (v as number) <= 0)) return fail(res, 400, "attrs.hoursPerMonth: ціле число > 0");
         if (v === null || v === "") delete merged[k]; else merged[k] = typeof v === "string" ? v.trim() : v;
       }

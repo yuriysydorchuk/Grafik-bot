@@ -3,6 +3,7 @@
 // червоним, звідси ж запуск; 2) хід роботи — смуга кроків, поле для коду SMS; 3) Wydruk —
 // офіційний PDF заповненої форми з порталу і рішення: підписати / чернетка / скасувати.
 import { useEffect, useState } from "react";
+import { KzisInput } from "./KzisInput";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { Link } from "wouter";
@@ -197,7 +198,10 @@ function PreviewScreen({ prev, onStart, starting, onClose, onSkip, onRefresh }: 
             <F l="Data podjęcia pracy" path="praca.dataPodjecia" form={form} set={set} type="date" />
             <F l="3.1 Klasyfikacja PKD" path="praca.pkdVersion" form={form} set={set} options={["PKD_2007", "PKD_2025"]} /><F l="Symbol PKD (роботи)" path="praca.pkd" form={form} set={set} placeholder="1039Z" />
             <F l="3.2 Stanowisko / rodzaj pracy" path="praca.stanowisko" form={form} set={set} />
-            <F l="3.3 Kod zawodu (KZiS)" path="praca.zawodKod" form={form} set={set} placeholder="932101" />
+            <label className="flex items-center gap-2 py-0.5 text-sm">
+              <span className="w-[44%] shrink-0 text-slate-500">3.3 Kod zawodu (KZiS){REQUIRED.has("praca.zawodKod") && <span className="text-rose-500"> *</span>}</span>
+              <KzisInput value={getPath(form, "praca.zawodKod")} onCommit={v => set("praca.zawodKod", v)} placeholder="932101" className="w-full" />
+            </label>
             <F l="3.4 Kod pocztowy" path="praca.miejsce.kodPocztowy" form={form} set={set} placeholder="20-404" /><F l="Województwo" path="praca.miejsce.wojewodztwo" form={form} set={set} /><F l="Powiat" path="praca.miejsce.powiat" form={form} set={set} /><F l="Gmina" path="praca.miejsce.gmina" form={form} set={set} />
             <F l="Miejscowość" path="praca.miejsce.miejscowosc" form={form} set={set} /><F l="Ulica" path="praca.miejsce.ulica" form={form} set={set} /><F l="Nr domu / lokalu" path="praca.miejsce.nrDomu" form={form} set={set} /><F l="Informacje dodatkowe" path="praca.infoDodatkowe" form={form} set={set} />
             <F l="3.5 Rodzaj umowy" path="praca.rodzajUmowy" form={form} set={set} options={["Umowa zlecenie / Umowa o świadczenie usług", "Umowa o dzieło", "Umowa o pracę na czas określony", "Umowa o pracę na czas nieokreślony", "Umowa o pracę na okres próbny"]} />

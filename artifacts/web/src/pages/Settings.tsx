@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { KzisInput } from "../components/KzisInput";
 import { Percent, Plus, Trash2, GripVertical, ChevronUp, ChevronDown, Landmark, Scale, Check, ShieldQuestion, History } from "lucide-react";
 import { toast } from "sonner";
 import { get, put, post, patch, del, upload, type Funnel, type FunnelStage, type Company, type DocumentType, type Position, type Me, type Factory, type DocCategory, type LegalRule, type LegalStatusMap, type EmailTemplate } from "../lib/api";
@@ -646,7 +647,7 @@ function FactoryPositionRow({ r, canRates, onSave, onRemove }: { r: FacPosRow; c
       <div className="grid gap-2 sm:grid-cols-[1fr_1fr_8rem]">
         <Input value={f.contractDuties} onChange={e => setF({ ...f, contractDuties: e.target.value })} onBlur={blur("contractDuties", r.contractDuties ?? "")} placeholder={t("Обов'язки в умові (Czynności) для цієї посади")} className="text-xs" />
         <Input value={f.uaStanowisko} onChange={e => setF({ ...f, uaStanowisko: e.target.value })} onBlur={blur("uaStanowisko", r.uaStanowisko ?? "")} placeholder={t("Stanowisko для powiadomienia (порожньо — з обовʼязків/назви)")} className="text-xs" />
-        <Input value={f.kzisCode} onChange={e => setF({ ...f, kzisCode: e.target.value.replace(/\D/g, "").slice(0, 6) })} onBlur={blur("kzisCode", r.kzisCode ?? "")} placeholder={r.catalogKzis ? `KZiS ${r.catalogKzis}` : t("код KZiS")} className="text-xs" inputMode="numeric" />
+        <KzisInput value={r.kzisCode ?? ""} onCommit={v => onSave({ kzisCode: v })} placeholder={r.catalogKzis ? `KZiS ${r.catalogKzis}` : t("код KZiS")} className="w-full text-xs" />
       </div>
     </div>
   );
@@ -655,12 +656,11 @@ function FactoryPositionRow({ r, canRates, onSave, onRemove }: { r: FacPosRow; c
 function PositionRow({ p, onSave, onDelete }: { p: Position; onSave: (patch: any) => void; onDelete: () => void }) {
   const t = useT();
   const [name, setName] = useState(p.name);
-  const [kzis, setKzis] = useState(p.kzisCode ?? "");
   return (
     <div className="flex flex-wrap items-center gap-2 rounded-lg border border-slate-200 px-2 py-1.5">
       <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${badgeClass(p.color)}`}><span className={`h-2 w-2 rounded-full ${dotClass(p.color)}`} />{p.name}</span>
       <Input value={name} onChange={e => setName(e.target.value)} className="min-w-32 flex-1" />
-      <Input value={kzis} onChange={e => setKzis(e.target.value.replace(/\D/g, "").slice(0, 6))} onBlur={() => { if (kzis !== (p.kzisCode ?? "")) onSave({ kzisCode: kzis }); }} placeholder={t("код KZiS")} title={t("Kod zawodu KZiS (6 цифр) — форма PSZ-PPWPU 3.3")} className="w-24" />
+      <KzisInput value={p.kzisCode ?? ""} onCommit={v => onSave({ kzisCode: v })} placeholder={t("код KZiS")} className="w-28" showName={false} />
       <StageColorPicker value={p.color} onChange={c => onSave({ color: c })} />
       {name.trim() && name !== p.name && <Button variant="secondary" onClick={() => onSave({ name: name.trim() })}>{t("Зберегти")}</Button>}
       <button onClick={onDelete} className="shrink-0 rounded p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600" title={t("Видалити")}><Trash2 className="h-4 w-4" /></button>

@@ -237,6 +237,7 @@ const SCOPE_RULES: Rule[] = [
   // ── Графік / замовлення / доступність / години (11.10.2026, скоуп-адмін з editData веде свої фабрики) ──
   // Списки без фабрики — фільтрує хендлер; довідники тижнів/шаблонів листів — лише читання
   R("GET", /^\/(?:dashboard|attention|weeks|email-templates|reliability|absences|absence-requests|hours|hours-reports|availability|availability\/missing)$/, { kind: "free" }),
+  R("GET", /^\/reference\/kzis$/, { kind: "free" }), // статичний довідник кодів zawodów
   // Без factoryId ці дії йдуть по ВСІХ фабриках — для скоуп-адміна фабрика обовʼязкова
   R("GET", /^\/(?:schedule|schedule\/excel|orders|hours\/factory-codes|hours\/day-compare|hours\/report-excel|hours\/weeks)$/, { kind: "queryFactory" }),
   // тижневий облік (26.10.2026, routes/hoursWeekly.ts): фабрика у тілі; відмітка — по фабриці рядка

@@ -31,6 +31,7 @@ import {
   LEGALITY_LABEL, LEGALITY_BADGE, LEGALITY_DOT, AXIS_LABEL, axisStatusLabel, CASE_STATUS_LABEL, CASE_STATUS_HINT, DOC_CATEGORY_LABEL,
   MISMATCH_LABEL, REQUIRED_MISSING_LABEL, NAT_GROUP_LABEL, reasonText, daysUntil,
 } from "../lib/legality";
+import { KzisInput } from "../components/KzisInput";
 import { fieldsFor, typeMatchesNationality, isEuNationality, type DocField, type DocFieldKey } from "../lib/documentFields";
 import { stayArticleOf } from "../lib/stayArticles";
 import { Button, Card, Spinner, Badge, Empty, Modal, Input, Select, Label, SearchableSelect, Textarea } from "../components/ui";
@@ -3664,6 +3665,13 @@ function DocModal({ workerId, doc, type, restrictCodes, defaultEmployerCompanyId
             {(Object.keys(CASE_STATUS_LABEL) as CaseStatus[]).map(cs => <option key={cs} value={cs}>{t(CASE_STATUS_LABEL[cs])} — {t(CASE_STATUS_HINT[cs])}</option>)}
           </Select>
           {caseStatus && <p className="mt-1 text-xs text-slate-400">{t(CASE_STATUS_HINT[caseStatus])}</p>}
+        </div>
+      );
+    }
+    if (f.key === "kzis" && !fieldDisabled(f)) {
+      return (
+        <div key={f.key}><Label>{t(f.label)}{req}</Label>
+          <KzisInput value={getStr(f.key)} onCommit={v => setStr(f.key, v)} className="w-full py-2" />
         </div>
       );
     }

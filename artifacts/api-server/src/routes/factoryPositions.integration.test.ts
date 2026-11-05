@@ -27,6 +27,12 @@ test("посади фабрики: додати вмикає «розрізня�
   const r1 = await put(owner.cookie, { rate: "31.5", contractDuties: "Pakowanie", uaStanowisko: "Pracownik produkcji", kzisCode: "932990" });
   assert.equal(r1.status, 200, r1.text);
   assert.equal((await put(owner.cookie, { kzisCode: "12" })).status, 400, "KZiS — 6 цифр");
+  // код мусить бути з довідника KZiS (зголошення #26); довідник віддається пікеру
+  const bad = await put(owner.cookie, { kzisCode: "999999" });
+  assert.equal(bad.status, 400); assert.match(bad.body.error, /немає в класифікації/);
+  const ref = await request(app).get("/api/reference/kzis").set("Cookie", owner.cookie);
+  assert.equal(ref.status, 200); assert.ok(ref.body.codes.length > 2900);
+  assert.ok(ref.body.codes.some((c: [string, string]) => c[0] === "932990" && /Pozostali robotnicy/.test(c[1])));
   // без viewFinance/factoryRates ставки мовчки ігноруються, решта полів пишеться
   assert.equal((await put(g.cookie, { rate: "99", contractDuties: "Sortowanie" })).status, 200);
   const [row] = await db.select().from(factoryPositionsTable).where(eq(factoryPositionsTable.factoryId, f!.id));

@@ -3,6 +3,7 @@
 // Фабрики (3.4 TERYT + назва посади/KZiS за замовчуванням і по посадах фабрики), Посади (KZiS),
 // Історія подач. Довідкові поля правляться на місці через /praca-gov/reference (cap legalization).
 import { useEffect, useState } from "react";
+import { KzisInput } from "../components/KzisInput";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { Trash2, Play, XCircle, RefreshCw, Pencil, Plus, ChevronDown, ChevronRight, KeyRound, Building2, Factory as FactoryIcon, Briefcase, History } from "lucide-react";
@@ -292,13 +293,13 @@ function FactoriesTab() {
                     <tr className="border-t border-slate-100 bg-slate-50/60">
                       <td className={cn(TD, "text-slate-500 italic")}>{t("за замовчуванням для всіх посад фабрики")}</td>
                       <td className={TD}><Cell value={f.uaStanowisko} placeholder={f.contractDuties || t("напр. Pracownik produkcji — pakowanie")} onSave={v => r.factory.mutate({ id: f.id, patch: { uaStanowisko: v } })} /></td>
-                      <td className={TD}><Cell value={f.uaKzisCode} placeholder="932990" w="w-24" mono onSave={v => r.factory.mutate({ id: f.id, patch: { uaKzisCode: v } })} /></td>
+                      <td className={TD}><KzisInput value={f.uaKzisCode} placeholder="932990" className="w-28" showName={false} onCommit={v => r.factory.mutate({ id: f.id, patch: { uaKzisCode: v } })} /></td>
                     </tr>
                     {f.positions.map(p => (
                       <tr key={p.positionId} className="border-t border-slate-100">
                         <td className={cn(TD, "whitespace-nowrap text-slate-700")}>{p.name}</td>
                         <td className={TD}><Cell value={p.uaStanowisko} placeholder={f.uaStanowisko || p.contractDuties || p.name || ""} onSave={v => r.factoryPos.mutate({ id: f.id, positionId: p.positionId, patch: { uaStanowisko: v } })} /></td>
-                        <td className={TD}><Cell value={p.kzisCode} placeholder={f.uaKzisCode || r.data!.positions.find(x => x.id === p.positionId)?.kzisCode || "—"} w="w-24" mono onSave={v => r.factoryPos.mutate({ id: f.id, positionId: p.positionId, patch: { kzisCode: v } })} /></td>
+                        <td className={TD}><KzisInput value={p.kzisCode} placeholder={f.uaKzisCode || r.data!.positions.find(x => x.id === p.positionId)?.kzisCode || "—"} className="w-28" showName={false} onCommit={v => r.factoryPos.mutate({ id: f.id, positionId: p.positionId, patch: { kzisCode: v } })} /></td>
                       </tr>))}
                     {f.positions.length === 0 && <tr><td colSpan={3} className={cn(TD, "text-xs text-slate-400")}>{t("На фабриці не налаштовано посад — діє рядок «за замовчуванням» або код посади з розділу «Посади»")}</td></tr>}
                   </tbody>
@@ -327,9 +328,9 @@ function PositionsTab() {
   if (r.isLoading || !r.data) return <Spinner />;
   return (
     <Card className="p-4">
-      <p className="mb-2 text-xs text-slate-500">{t("Код zawodu KZiS посади за замовчуванням (6 цифр). Приклади: 932101 Pakowacz ręczny · 932990 Robotnik przemysłowy gdzie indziej niesklasyfikowany · 834401 Kierowca operator wózków jezdniowych. На фабриці можна задати інший.")}</p>
+      <p className="mb-2 text-xs text-slate-500">{t("Код zawodu KZiS посади за замовчуванням — вибирається з довідника: почніть вводити код або назву zawodu. Приклади: 932101 Pakowacz ręczny · 932990 Pozostali robotnicy wykonujący prace proste w przemyśle · 834401 Kierowca operator wózków jezdniowych. На фабриці можна задати інший.")}</p>
       <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-        {r.data.positions.map(p => <div key={p.id} className="flex items-center justify-between gap-2 rounded-lg border border-slate-200 px-3 py-1.5 text-sm"><span className="text-slate-700">{p.name}</span><Cell value={p.kzisCode} placeholder="— — — — — —" w="w-24" mono onSave={v => r.position.mutate({ id: p.id, patch: { kzisCode: v } })} /></div>)}
+        {r.data.positions.map(p => <div key={p.id} className="flex items-center justify-between gap-2 rounded-lg border border-slate-200 px-3 py-1.5 text-sm"><span className="text-slate-700">{p.name}</span><KzisInput value={p.kzisCode} placeholder={t("код або назва")} className="w-28" showName={false} onCommit={v => r.position.mutate({ id: p.id, patch: { kzisCode: v } })} /></div>)}
       </div>
     </Card>
   );

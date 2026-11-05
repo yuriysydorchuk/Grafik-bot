@@ -37,6 +37,7 @@ import { factoryShiftHours, factoryShifts, nowWarsaw, warsawDayName, warsawDateS
 import { loadWeekShiftOverrides, loadDateShiftOverrides, loadDatesShiftOverrides, overrideFor, shiftOverrideKey, shiftDurationHours, type ShiftOverrideMap } from "../services/shiftOverrides";
 import { hashPassword } from "../lib/auth";
 import { workerFileDownloadName, contentDisposition } from "../lib/downloadName";
+import { parseKzis, KZIS_CODES, KZIS_VERSION } from "../lib/kzis";
 import { scopeGate, workerInScopeSql, factoryInScope, factoryInScopeSql, factoriesOutsideScope, type AdminScope } from "../lib/scope";
 import { calcPayroll, round2, DEFAULT_RATES, type FinanceRates } from "../lib/payroll";
 import { WORKER_DOCS_DIR, UPLOADS_ROOT, makeStoredName, deleteStoredFile, sniffDocMime, compressUploadImage } from "../lib/uploads";
@@ -1584,7 +1585,10 @@ router.patch("/positions/:id", RW, async (req, res) => {
   const patch: any = {};
   if (req.body?.name !== undefined) { const n = String(req.body.name).trim(); if (!n) return fail(res, 400, "Назва не може бути порожньою"); patch.name = n; }
   if (req.body?.color !== undefined) patch.color = String(req.body.color);
-  if (req.body?.kzisCode !== undefined) { const k = String(req.body.kzisCode ?? "").trim(); if (k && !/^\d{6}$/.test(k)) return fail(res, 400, "Код KZiS — 6 цифр"); patch.kzisCode = k || null; } // форма PSZ-PPWPU 3.3
+  if (req.body?.kzisCode !== undefined) { // форма PSZ-PPWPU 3.3 — код з чинної класифікації (lib/kzis.ts)
+    const [cur] = await db.select({ k: positionsTable.kzisCode }).from(positionsTable).where(eq(positionsTable.id, id));
+    try { patch.kzisCode = parseKzis(req.body.kzisCode, cur?.k); } catch (e: any) { return fail(res, 400, e.message); }
+  }
   if (req.body?.isActive !== undefined) patch.isActive = !!req.body.isActive;
   if (req.body?.sortOrder !== undefined) patch.sortOrder = Number(req.body.sortOrder);
   const [p] = await db.update(positionsTable).set(patch).where(eq(positionsTable.id, id)).returning();
@@ -1677,6 +1681,13 @@ router.delete("/document-types/:id", RW, async (req, res) => {
   if (used > 0) return fail(res, 400, `Документ використовується у ${used} працівників — спочатку приберіть`);
   await db.delete(documentTypesTable).where(eq(documentTypesTable.id, id));
   ok(res, { ok: true });
+});
+
+// Довідник KZiS (коди zawodów, lib/kzisData.ts) для пікера «код · назва» у вебі — зголошення #26.
+// Статичний (міняється лише з релізом) → браузер кешує на добу.
+router.get("/reference/kzis", (_req, res) => {
+  res.setHeader("Cache-Control", "private, max-age=86400");
+  ok(res, { version: KZIS_VERSION, codes: KZIS_CODES });
 });
 
 // ─── Per-worker documents ───────────────────────────────────────────────────────
@@ -2708,10 +2719,9 @@ router.put("/factories/:id/positions/:positionId", RW, async (req, res) => {
   const txt = (v: unknown) => String(v ?? "").trim() || null;
   if (b.contractDuties !== undefined) patch.contractDuties = txt(b.contractDuties);
   if (b.uaStanowisko !== undefined) patch.uaStanowisko = txt(b.uaStanowisko);
-  if (b.kzisCode !== undefined) {
-    const k = String(b.kzisCode ?? "").replace(/\D/g, "");
-    if (k && k.length !== 6) return fail(res, 400, "Kod zawodu KZiS — 6 цифр");
-    patch.kzisCode = k || null;
+  if (b.kzisCode !== undefined) { // код з чинної класифікації (lib/kzis.ts); уже збережений можна лишити
+    const [cur] = await db.select({ k: factoryPositionsTable.kzisCode }).from(factoryPositionsTable).where(and(eq(factoryPositionsTable.factoryId, fid), eq(factoryPositionsTable.positionId, pid)));
+    try { patch.kzisCode = parseKzis(b.kzisCode, cur?.k); } catch (e: any) { return fail(res, 400, e.message); }
   }
   // ставки — фінансові: без права мовчки ігноруються (як у setFactoryPositions)
   if (canFactoryRates(req)) for (const k of ["rate", "rateNetto", "invoiceRate"] as const) if (b[k] !== undefined) patch[k] = parseRate(b[k]);
