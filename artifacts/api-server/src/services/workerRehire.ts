@@ -26,7 +26,7 @@ export type RestoreOpts = {
   mistaken?: boolean;
 };
 export type FireUndoSummary = { contractsReopened: number; contractsLeftClosed: number; tasksCancelled: number; docsCancelled: number; docsAlreadySent: number };
-export type RestoreResult = { ok: true; worker: Worker; clearedRehire: boolean; undo?: FireUndoSummary } | { ok: false; error: string };
+export type RestoreResult = { ok: true; worker: Worker; clearedRehire: boolean; undo?: FireUndoSummary; undoFailed?: boolean } | { ok: false; error: string };
 
 export async function restoreWorker(opts: RestoreOpts): Promise<RestoreResult> {
   const [w] = await db.select().from(workersTable).where(eq(workersTable.id, opts.workerId));
@@ -105,15 +105,17 @@ export async function restoreWorker(opts: RestoreOpts): Promise<RestoreResult> {
       if (getState(tid)?.action?.startsWith("rehire:")) { clearState(tid); clearedRehire = true; }
     }
   } catch (e) { logger.warn({ err: String(e), workerId: w.id }, "rehire state clear failed"); }
-  let undo: FireUndoSummary | undefined;
+  // профіль уже активний; якщо відкат наслідків упав — кажемо про це явно (undoFailed), бо повторити
+  // «відновити» вже не можна, і умови/задачі доведеться перевірити руками
+  let undo: FireUndoSummary | undefined, undoFailed = false;
   if (opts.mistaken) {
     try { undo = await undoFiringEffects(w, opts.adminId); }
-    catch (e) { logger.warn({ err: String(e), workerId: w.id }, "fire undo effects failed"); }
+    catch (e) { undoFailed = true; logger.error({ err: String(e), workerId: w.id }, "fire undo effects failed"); }
   }
   // легальність: employerSince/обовʼязок powiadomienie тепер від дати повернення (legalityRecompute.employerSinceOf)
   import("./documentEvents").then(m => m.workerLegalityChanged(w.id)).catch(() => {});
   logger.info({ workerId: w.id, factoryChanged, positionChanged, tgChanged, clearedRehire, mistaken: !!opts.mistaken, undo, adminId: opts.adminId }, "worker restored");
-  return { ok: true, worker: restored, clearedRehire, undo };
+  return { ok: true, worker: restored, clearedRehire, undo, undoFailed };
 }
 
 // Наслідки помилкового звільнення — назад: умови, закриті ЦИМ звільненням, отримують попередній кінець
@@ -122,9 +124,14 @@ export async function restoreWorker(opts: RestoreOpts): Promise<RestoreResult> {
 // відкриті задачі ZWUA й «документ звільнення» скасовуються разом з ще не надісланими документами.
 async function undoFiringEffects(w: Worker, adminId: number | null): Promise<FireUndoSummary> {
   const { contractsTable, tasksTable } = await import("@workspace/db");
-  const { sql, inArray } = await import("drizzle-orm");
+  const { sql, inArray, desc } = await import("drizzle-orm");
   const { eventContractIds } = await import("./contractEndDocs");
   const fireDate = w.firedAt ? w.firedAt.toLocaleDateString("sv-SE", { timeZone: "Europe/Warsaw" }) : null;
+  // лише наслідки ЦЬОГО звільнення: задачі, створені від моменту запису `fired` (раніші — зі справжнього
+  // виходу людини з іншої фабрики, startFactoryEndFlow — їх не чіпаємо)
+  const [fj] = await db.select({ at: workerChangesTable.createdAt }).from(workerChangesTable)
+    .where(and(eq(workerChangesTable.workerId, w.id), eq(workerChangesTable.field, "fired"))).orderBy(desc(workerChangesTable.id)).limit(1);
+  const firedSince = fj?.at ? new Date(fj.at.getTime() - 60_000) : null;
   const out: FireUndoSummary = { contractsReopened: 0, contractsLeftClosed: 0, tasksCancelled: 0, docsCancelled: 0, docsAlreadySent: 0 };
   const signed = await db.select().from(contractsTable).where(and(eq(contractsTable.workerId, w.id), eq(contractsTable.status, "signed")));
   const events = await eventContractIds(signed.map(c => c.id));
@@ -134,18 +141,21 @@ async function undoFiringEffects(w: Worker, adminId: number | null): Promise<Fir
     const closedAt = c.dateTo ? String(c.dateTo).slice(0, 10) : null;
     if (data._closedByFire != null && closedAt === fireDate) {
       const prev = typeof data._dateToBeforeFire === "string" && data._dateToBeforeFire ? data._dateToBeforeFire.slice(0, 10) : null;
-      await db.update(contractsTable).set({ dateTo: prev, data: sql`${contractsTable.data} - '_closedByFire' - '_dateToBeforeFire'`, updatedAt: new Date() }).where(eq(contractsTable.id, c.id));
-      out.contractsReopened++;
+      // передумова — в UPDATE: якщо кінець умови тим часом виправили руками, не затираємо
+      const [re] = await db.update(contractsTable).set({ dateTo: prev, data: sql`${contractsTable.data} - '_closedByFire' - '_dateToBeforeFire'`, updatedAt: new Date() })
+        .where(and(eq(contractsTable.id, c.id), eq(contractsTable.dateTo, fireDate!))).returning({ id: contractsTable.id });
+      if (re) out.contractsReopened++; else out.contractsLeftClosed++;
     } else if (fireDate && closedAt === fireDate) out.contractsLeftClosed++;
   }
   const open = await db.select().from(tasksTable).where(and(eq(tasksTable.workerId, w.id), inArray(tasksTable.source, ["auto:termination_zus", "auto:termination_doc"]), inArray(tasksTable.status, ["open", "in_progress", "review"])));
   for (const t of open) {
+    if (firedSince && t.createdAt < firedSince) continue;                       // задача старша за це звільнення
+    if ((t.autoParams as { factoryEnd?: boolean } | null)?.factoryEnd) continue;    // вихід з однієї фабрики — окрема історія
     if (t.source === "auto:termination_doc" && t.contractId) {
-      const [doc] = await db.select({ id: contractsTable.id, status: contractsTable.status }).from(contractsTable).where(eq(contractsTable.id, t.contractId));
-      if (doc && ["draft", "pending_approval", "approved"].includes(doc.status)) {
-        await db.update(contractsTable).set({ status: "cancelled", declineReason: "звільнення скасовано (помилкове)", updatedAt: new Date() }).where(eq(contractsTable.id, doc.id));
-        out.docsCancelled++;
-      } else if (doc) out.docsAlreadySent++;
+      // скасовуємо лише ще НЕ надісланий документ — умова в самому UPDATE (його могли надіслати щойно)
+      const [cancelled] = await db.update(contractsTable).set({ status: "cancelled", declineReason: "звільнення скасовано (помилкове)", updatedAt: new Date() })
+        .where(and(eq(contractsTable.id, t.contractId), inArray(contractsTable.status, ["draft", "pending_approval", "approved"]))).returning({ id: contractsTable.id });
+      if (cancelled) out.docsCancelled++; else out.docsAlreadySent++;
     }
     // ключ звільняємо суфіксом: нове (справжнє) звільнення має отримати свої задачі й документи
     await db.update(tasksTable).set({ status: "cancelled", completedAt: new Date(), completedById: adminId, resolutionNote: "звільнення скасовано (помилкове)", sourceKey: sql`${tasksTable.sourceKey} || ':undone:' || ${tasksTable.id}::text`, updatedAt: new Date() }).where(eq(tasksTable.id, t.id));

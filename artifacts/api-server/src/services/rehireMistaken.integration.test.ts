@@ -66,16 +66,20 @@ test("uaAttended: розіслана минула зміна без явки →
   const [fa] = await db.insert(factoriesTable).values({ name: "LST" }).returning();
   const mk = async (fullName: string) => (await db.insert(workersTable).values({ fullName, factoryId: fa!.id, isActive: true }).returning())[0]!;
   const noShow = await mk("Bez Yavky"), came = await mk("Z Yavkoyu"), manual = await mk("Bez Hrafiku"), byFile = await mk("Z Faylu"), future = await mk("Zavtra");
+  const absent = await mk("Nejavka"), zeroFile = await mk("Nul Hodyn");
   const [wk] = await db.insert(scheduleWeeksTable).values({ weekStart: "2026-10-12", status: "approved" }).returning();
   const entry = (workerId: number, day: string, status: string, sent = true) => ({ weekId: wk!.id, workerId, factoryId: fa!.id, dayOfWeek: day, shift: "1", status, sentAt: sent ? new Date() : null });
   await db.insert(scheduleEntriesTable).values([
     entry(noShow.id, "mon", "scheduled"), entry(came.id, "mon", "scheduled"), entry(came.id, "tue", "present"),
     entry(byFile.id, "mon", "scheduled"),
+    entry(absent.id, "mon", "absent", false), entry(zeroFile.id, "mon", "scheduled"),
   ] as any);
+  await db.insert(factoryHoursTable).values({ workerId: zeroFile.id, month: "2026-10", factoryId: fa!.id, hours: 0, days: { "2026-10-12": 0 } } as any);
   await db.insert(factoryHoursTable).values({ workerId: byFile.id, month: "2026-10", factoryId: fa!.id, hours: 8, days: { "2026-10-13": 8 } } as any);
   const [wk2] = await db.insert(scheduleWeeksTable).values({ weekStart: "2026-10-19", status: "approved" }).returning();
   await db.insert(scheduleEntriesTable).values({ weekId: wk2!.id, workerId: future.id, factoryId: fa!.id, dayOfWeek: "wed", shift: "1", status: "scheduled", sentAt: new Date() } as any);
-  const rows = [noShow, came, manual, byFile, future].map(w => ({ id: w.id, start: "2026-10-12" }));
+  const rows = [noShow, came, manual, byFile, future, absent, zeroFile].map(w => ({ id: w.id, start: "2026-10-12" }));
   const ok = await uaAttended(rows, "2026-10-20"); // «сьогодні» — вівторок 20.10: середа 21.10 ще попереду
   assert.deepEqual([ok.has(noShow.id), ok.has(came.id), ok.has(manual.id), ok.has(byFile.id), ok.has(future.id)], [false, true, true, true, true]);
+  assert.deepEqual([ok.has(absent.id), ok.has(zeroFile.id)], [false, false], "відмічена неявка і нуль годин у файлі фабрики вихід не підтверджують");
 });

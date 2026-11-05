@@ -1451,6 +1451,7 @@ const EN: Record<string, string> = {
   "Звільнено буде: {n} (з {date})": "Will be dismissed: {n} (as of {date})",
   "Приховано з місяця: {n}": "Hidden from the month: {n}",
   "Готово: звільнено {f}, приховано {h}": "Done: dismissed {f}, hidden {h}",
+  "Профіль відновлено, але наслідки звільнення відкотити не вдалося — перевірте умови й задачі звільнення вручну": "The profile is restored, but the dismissal's effects could not be rolled back — check the contracts and dismissal tasks manually",
   "Дати початку не збігаються: {parts}": "Start dates do not match: {parts}",
   "ZUA {zua} раніше, ніж почав діяти дозвіл на працю ({name} з {from})": "ZUA {zua} is earlier than the work permit took effect ({name} from {from})",
   "ZWUA {zwua}, а звільнення {fire} — виреєстрування має бути наступним днем ({expected})": "ZWUA {zwua}, while the dismissal is {fire} — deregistration should be the next day ({expected})",

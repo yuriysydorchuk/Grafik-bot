@@ -31,7 +31,9 @@ export function RestoreKindChoice({ value, onChange }: { value: RestoreKind | nu
 
 // Що відкотилось після «звільнили помилково» — текст для тосту
 export type FireUndo = { contractsReopened: number; contractsLeftClosed: number; tasksCancelled: number; docsCancelled: number; docsAlreadySent: number };
-export function fireUndoText(t: (s: string, p?: any) => string, u: FireUndo | null | undefined): { ok: string | null; warn: string | null } {
+export function fireUndoText(t: (s: string, p?: any) => string, u: FireUndo | null | undefined, failed?: boolean): { ok: string | null; warn: string | null } {
+  // профіль уже активний, але відкат наслідків упав — повторити відновлення не можна, тож кажемо прямо
+  if (failed) return { ok: null, warn: t("Профіль відновлено, але наслідки звільнення відкотити не вдалося — перевірте умови й задачі звільнення вручну") };
   if (!u) return { ok: null, warn: null };
   const ok = [u.contractsReopened && t("умов відкрито назад: {n}", { n: u.contractsReopened }), u.tasksCancelled && t("задач звільнення скасовано: {n}", { n: u.tasksCancelled }), u.docsCancelled && t("документів скасовано: {n}", { n: u.docsCancelled })].filter(Boolean).join(" · ");
   const warn = [u.contractsLeftClosed && t("умов лишилось закритими датою звільнення: {n} — виправте дату кінця в умовах", { n: u.contractsLeftClosed }), u.docsAlreadySent && t("документів звільнення вже надіслано/підписано: {n} — перевірте їх в умовах", { n: u.docsAlreadySent })].filter(Boolean).join(" · ");

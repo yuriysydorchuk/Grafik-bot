@@ -69,8 +69,8 @@ export default function Workers() {
     onError: (e: any) => toast.error(e.message),
   });
   const restore = useMutation({
-    mutationFn: (v: { id: number; mistaken: boolean }) => post<{ undo?: FireUndo | null }>(`/workers/${v.id}/restore`, { mistaken: v.mistaken }),
-    onSuccess: (r) => { invalidate(); toast.success(t("Відновлено")); const u = fireUndoText(t, r?.undo); if (u.ok) toast.success(u.ok); if (u.warn) toast.warning(u.warn, { duration: 12000 }); setRestoreAsk(null); },
+    mutationFn: (v: { id: number; mistaken: boolean }) => post<{ undo?: FireUndo | null; undoFailed?: boolean }>(`/workers/${v.id}/restore`, { mistaken: v.mistaken }),
+    onSuccess: (r) => { invalidate(); toast.success(t("Відновлено")); const u = fireUndoText(t, r?.undo, r?.undoFailed); if (u.ok) toast.success(u.ok); if (u.warn) toast.warning(u.warn, { duration: 12000 }); setRestoreAsk(null); },
     onError: (e: any) => toast.error(e.message),
   });
   const [restoreAsk, setRestoreAsk] = useState<{ worker: Worker; kind: RestoreKind | null } | null>(null); // новий найм / помилкове звільнення (#19)

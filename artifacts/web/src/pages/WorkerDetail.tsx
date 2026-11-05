@@ -217,9 +217,9 @@ export default function WorkerDetail() {
   });
   const [restoring, setRestoring] = useState(false);
   const restore = useMutation({
-    mutationFn: (p: { factoryId: number | null; force: boolean; mistaken: boolean }) => post<{ undo?: FireUndo | null }>(`/workers/${id}/restore`, p),
+    mutationFn: (p: { factoryId: number | null; force: boolean; mistaken: boolean }) => post<{ undo?: FireUndo | null; undoFailed?: boolean }>(`/workers/${id}/restore`, p),
     onSuccess: (r) => {
-      { const u = fireUndoText(t, r?.undo); if (u.ok) toast.success(u.ok); if (u.warn) toast.warning(u.warn, { duration: 12000 }); qc.invalidateQueries({ queryKey: ["worker-contracts"] }); qc.invalidateQueries({ queryKey: ["tasks"] }); } qc.invalidateQueries({ queryKey: ["worker", id] }); qc.invalidateQueries({ queryKey: ["workers"] }); qc.invalidateQueries({ queryKey: ["worker-changes"] }); qc.invalidateQueries({ queryKey: ["worker-factories", id] }); setRestoring(false); toast.success(t("Відновлено")); },
+      { const u = fireUndoText(t, r?.undo, r?.undoFailed); if (u.ok) toast.success(u.ok); if (u.warn) toast.warning(u.warn, { duration: 12000 }); qc.invalidateQueries({ queryKey: ["worker-contracts"] }); qc.invalidateQueries({ queryKey: ["tasks"] }); } qc.invalidateQueries({ queryKey: ["worker", id] }); qc.invalidateQueries({ queryKey: ["workers"] }); qc.invalidateQueries({ queryKey: ["worker-changes"] }); qc.invalidateQueries({ queryKey: ["worker-factories", id] }); setRestoring(false); toast.success(t("Відновлено")); },
     onError: (e: any) => toast.error(e.message),
   });
   // зміна з датою набуття: свод-релевантні поля відкривають модалку «від коли +

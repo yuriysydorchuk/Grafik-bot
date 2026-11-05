@@ -41,7 +41,7 @@ export async function workerDateWarnings(workerId: number): Promise<DateWarning[
     .where(and(eq(workerDocumentsTable.workerId, workerId), inArray(workerDocumentsTable.docTypeId, types.map(t => t.id)), ne(workerDocumentsTable.status, "missing"))) : [];
   const zus = await loadZusPairs(workerId);
 
-  const companyIds = [...new Set([...umowy.map(c => c.companyId), ...zus.map(z => z.state.companyId)].filter((x): x is number => x != null))];
+  const companyIds = [...new Set([...umowy.map(c => c.companyId), ...zus.map(z => z.state.companyId), ...docs.map(d => d.employerCompanyId)].filter((x): x is number => x != null))];
   const names = new Map((companyIds.length ? await db.select({ id: companiesTable.id, name: companiesTable.name }).from(companiesTable).where(inArray(companiesTable.id, companyIds)) : []).map(c => [c.id, c.name]));
   const forCo = (docCompany: number | null, co: number | null) => docCompany == null || co == null || docCompany === co;
   // (студент до 26 до ZUS не зголошується — у нього ZUA просто немає, і порівнюються лише умова з powiadomieniem)

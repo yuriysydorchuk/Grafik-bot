@@ -757,10 +757,12 @@ router.post("/workers/:id/assign-factory", LIFECYCLE, async (req, res) => {
   if (!f) return fail(res, 404, "Фабрику не знайдено");
   const patch: Record<string, unknown> = { factoryId };
   if (!f.multiFirm && f.companyId != null && f.companyId !== before.companyId) patch.companyId = f.companyId;
-  const [w] = await db.update(workersTable).set(patch).where(eq(workersTable.id, id)).returning();
+  // передумови — у самому UPDATE: двоє адмінів різних фабрик одночасно не перепризначать одне одного
+  const [w] = await db.update(workersTable).set(patch).where(and(eq(workersTable.id, id), isNull(workersTable.factoryId), eq(workersTable.isActive, true))).returning();
+  if (!w) return fail(res, 409, "Фабрику цьому профілю щойно призначив хтось інший — оновіть сторінку");
   await journalWorkerChanges(id, before as any, patch, (req as AuthedRequest).admin?.adminId ?? null);
   void workerLegalityChanged(id);
-  ok(res, stripWorkerEcho(w!, req));
+  ok(res, stripWorkerEcho(w, req));
 });
 
 // Дата звільнення вже звільненого — services/workerFire.ts changeFireDate (22.10.2026)
@@ -782,6 +784,12 @@ router.post("/workers/:id/fire", LIFECYCLE, async (req, res) => {
   // інакше виповідзення по фабриці (POST /workers/:id/termination {factoryId})
   const outside = await factoriesOutsideScope((req as AuthedRequest).admin?.scope, id);
   if (outside.length) return fail(res, 403, "Людина працює ще на фабриці поза вашим доступом — використайте виповідзення по фабриці");
+  // «нічий» профіль (без фабрики) скоуп-адмін бачить, але звільнений він зник би з його скоупу, і
+  // помилку вже не скасувати — спершу фабрика (assign-factory), тоді звільнення (ревʼю codex 05.11.2026)
+  if ((req as AuthedRequest).admin?.scope) {
+    const [cur] = await db.select({ factoryId: workersTable.factoryId }).from(workersTable).where(eq(workersTable.id, id));
+    if (cur && cur.factoryId == null) return fail(res, 400, "У профілю немає фабрики — спершу призначте фабрику, тоді звільняйте");
+  }
   const { fireWorker } = await import("../services/workerFire");
   const r = await fireWorker({ workerId: id, date: rawDate || null, adminId: (req as AuthedRequest).admin?.adminId ?? null, source: "web" });
   if (!r.ok) return fail(res, 400, r.error);
@@ -951,7 +959,7 @@ router.post("/workers/:id/restore", LIFECYCLE, async (req, res) => {
   const r = await restoreWorker({ workerId: id, factoryId: optId(b.factoryId), positionId: optId(b.positionId), adminId: (req as AuthedRequest).admin?.adminId ?? null, force, mistaken: b.mistaken === true });
   if (!r.ok) return fail(res, 400, r.error);
   if (r.clearedRehire) await notifyRestoredInBot(r.worker);
-  ok(res, { ...stripWorkerEcho(r.worker, req), undo: r.undo ?? null });
+  ok(res, { ...stripWorkerEcho(r.worker, req), undo: r.undo ?? null, undoFailed: !!r.undoFailed });
 });
 
 // Людина чекала відповіді на заявку з бота (клавіатуру тоді прибрали) — кажемо, що відновлено,

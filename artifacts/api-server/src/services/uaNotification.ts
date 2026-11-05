@@ -237,17 +237,20 @@ export async function uaAttended(rows: { id: number; start?: string | null }[], 
   const from = (id: number, d: string) => { const s = startOf.get(id); return !s || d >= s; };
   const ents = await db.select({ workerId: scheduleEntriesTable.workerId, status: scheduleEntriesTable.status, sentAt: scheduleEntriesTable.sentAt, day: scheduleEntriesTable.dayOfWeek, weekStart: scheduleWeeksTable.weekStart })
     .from(scheduleEntriesTable).innerJoin(scheduleWeeksTable, eq(scheduleEntriesTable.weekId, scheduleWeeksTable.id))
-    .where(and(inArray(scheduleEntriesTable.workerId, ids), inArray(scheduleEntriesTable.status, ["present", "scheduled"])));
+    .where(and(inArray(scheduleEntriesTable.workerId, ids), inArray(scheduleEntriesTable.status, ["present", "scheduled", "absent"])));
   const present = new Set<number>(), doubt = new Set<number>();
   for (const e of ents) {
     if (e.workerId == null) continue;
     const d = entryDateStr(String(e.weekStart), e.day);
     if (!from(e.workerId, d)) continue;
     if (e.status === "present") present.add(e.workerId);
-    else if (e.sentAt && d < today) doubt.add(e.workerId); // розіслана минула зміна без явки
+    else if (e.status === "absent" || (e.sentAt && d < today)) doubt.add(e.workerId); // відмічена неявка або розіслана минула зміна без явки
   }
   const fh = await db.select({ workerId: factoryHoursTable.workerId, days: factoryHoursTable.days }).from(factoryHoursTable).where(inArray(factoryHoursTable.workerId, ids));
-  for (const h of fh) for (const d of Object.keys((h.days ?? {}) as Record<string, unknown>)) if (/^\d{4}-\d{2}-\d{2}$/.test(d) && from(h.workerId, d)) present.add(h.workerId);
+  for (const h of fh) for (const [d, v] of Object.entries((h.days ?? {}) as Record<string, number | Record<string, number>>)) {
+    const hours = typeof v === "object" && v ? Object.values(v).reduce((s, x) => s + (Number(x) || 0), 0) : Number(v);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(d) && hours > 0 && from(h.workerId, d)) present.add(h.workerId); // нуль годин — не вихід
+  }
   for (const id of doubt) if (!present.has(id)) out.delete(id);
   return out;
 }

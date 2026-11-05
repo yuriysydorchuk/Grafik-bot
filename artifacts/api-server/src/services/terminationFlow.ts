@@ -57,6 +57,10 @@ export async function refreshZwuaTasks(workerId: number, fireDate: string): Prom
 }
 
 export async function startTerminationFlow(worker: Worker, fireDate: string, actorAdminId: number | null, earlyContractIds: number[] = []): Promise<void> {
+  // ланцюжок іде після відповіді fireWorker; якщо звільнення за цей час скасували («звільнили помилково»,
+  // workerRehire) — задач і документів звільнення активній людині не створюємо
+  const stillFired = async () => !(await db.select({ a: workersTable.isActive }).from(workersTable).where(eq(workersTable.id, worker.id)))[0]?.a;
+  if (!(await stillFired())) return;
   // 2) ZUS ZWUA — завжди, крім звільнення датою ДО запуску модуля (settings.legacyBefore):
   //    таке заднім числом = історія, нічний скан (taskAutoRules) її теж не бере — інакше
   //    задача зʼявилась би тут і зникла наступної ночі
@@ -99,6 +103,7 @@ export async function startTerminationFlow(worker: Worker, fireDate: string, act
   //    zaświadczenie o zatrudnieniu на кожну умову + wypowiedzenie (від працівника), якщо
   //    звільнення раніше кінця умови — services/contractEndDocs.ts
   try {
+    if (!(await stillFired())) return;
     const { issueTerminationDocs } = await import("./contractEndDocs");
     const r = await issueTerminationDocs(worker, fireDate, earlyContractIds, actorAdminId);
     if (r.zaswiadczenie || r.wypowiedzenie) logger.info({ workerId: worker.id, ...r }, "termination documents issued");
