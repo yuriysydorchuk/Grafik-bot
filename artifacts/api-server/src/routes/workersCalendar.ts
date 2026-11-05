@@ -211,7 +211,7 @@ export async function collectWorkerEvents(opts: { from: string; to: string; fact
     // виключення з обліку годин по місяцях (відпустка / ще не почав / ручне) — подія на 1-ше число місяця
     const m0 = from.slice(0, 7), m1 = to.slice(0, 7);
     const ex = await db.select().from(hoursMonthExclusionsTable).where(and(inArray(hoursMonthExclusionsTable.workerId, ids), gte(hoursMonthExclusionsTable.month, m0), lte(hoursMonthExclusionsTable.month, m1)));
-    const label: Record<string, string> = { vacation: "Відпустка (місяць поза обліком)", not_started: "Ще не почав (місяць поза обліком)", manual: "Місяць поза обліком годин" };
+    const label: Record<string, string> = { vacation: "Відпустка (місяць поза обліком)", not_started: "Ще не почав (місяць поза обліком)", manual: "Місяць поза обліком годин", fire_pending: "Очікує звільнення (задача графіковому)" };
     for (const e of ex) {
       const date = `${e.month}-01`; if (date < from || date > to) continue;
       const w = wmap.get(e.workerId)!;

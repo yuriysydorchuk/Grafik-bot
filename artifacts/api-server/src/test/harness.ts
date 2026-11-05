@@ -17,6 +17,7 @@ import {
   legalRulesTable, workerLegalityTable, documentAuditTable,
   agreementConditionsTable, agreementChargesTable, agreementAuditTable,
   tasksTable, taskAssigneesTable, taskCommentsTable, taskEventsTable, taskTemplatesTable, taskAutoRulesTable,
+  hoursMonthExclusionsTable,
 } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import app from "../app.ts";
@@ -42,6 +43,7 @@ export {
   legalRulesTable, workerLegalityTable, documentAuditTable,
   agreementConditionsTable, agreementChargesTable, agreementAuditTable,
   tasksTable, taskAssigneesTable, taskCommentsTable, taskEventsTable, taskTemplatesTable, taskAutoRulesTable,
+  hoursMonthExclusionsTable,
 };
 export { hashPassword, SESSION_COOKIE };
 

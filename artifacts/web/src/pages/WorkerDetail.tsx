@@ -4197,11 +4197,15 @@ function FireDateRow({ workerId, firedAt, readOnly }: { workerId: number; firedA
   const [draft, setDraft] = useState(current);
   const today = new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Warsaw" });
   const save = useMutation({
-    mutationFn: (date: string) => put<{ contracts: number }>(`/workers/${workerId}/fire-date`, { date }),
+    mutationFn: (date: string) => put<{ contracts: number; zwuaTasks?: number; docsRegenerated?: number; staleDocs?: { contractId: number }[] }>(`/workers/${workerId}/fire-date`, { date }),
     onSuccess: (r) => {
       qc.invalidateQueries({ queryKey: ["worker"] }); qc.invalidateQueries({ queryKey: ["worker-changes"] }); qc.invalidateQueries({ queryKey: ["worker-contracts"] });
+      qc.invalidateQueries({ queryKey: ["tasks"] }); qc.invalidateQueries({ queryKey: ["task"] });
       setEditing(false);
       toast.success(r.contracts ? t("Дату звільнення змінено; умов з новою датою закінчення: {n}", { n: r.contracts }) : t("Дату звільнення змінено"));
+      // похідне від дати (05.11.2026): задача ZWUA й ненадіслані документи оновлюються самі; надіслані/підписані — ні
+      if (r.zwuaTasks || r.docsRegenerated) toast.success(t("Оновлено слідом: задач ZWUA — {z}, документів звільнення — {d}", { z: r.zwuaTasks ?? 0, d: r.docsRegenerated ?? 0 }));
+      if (r.staleDocs?.length) toast.warning(t("Документи звільнення зі старою датою вже надіслані або підписані ({n}) — перевірте їх в умовах профілю", { n: r.staleDocs.length }), { duration: 12000 });
     },
     onError: (e: any) => toast.error(e.message),
   });
@@ -4209,7 +4213,7 @@ function FireDateRow({ workerId, firedAt, readOnly }: { workerId: number; firedA
     if (!draft || draft === current) { setEditing(false); return; }
     if (await confirmDlg({
       title: t("Змінити дату звільнення?"),
-      message: t("{from} → {to}. Умови, закриті звільненням, отримають нову дату закінчення; зміна буде в «Історії змін».", { from: current ? new Date(current + "T00:00:00").toLocaleDateString("uk-UA") : "—", to: new Date(draft + "T00:00:00").toLocaleDateString("uk-UA") }),
+      message: t("{from} → {to}. Умови, закриті звільненням, отримають нову дату закінчення; задача ZWUA і ще не надіслані документи звільнення оновляться; зміна буде в «Історії змін».", { from: current ? new Date(current + "T00:00:00").toLocaleDateString("uk-UA") : "—", to: new Date(draft + "T00:00:00").toLocaleDateString("uk-UA") }),
       confirmText: t("Змінити"),
     })) save.mutate(draft);
   };

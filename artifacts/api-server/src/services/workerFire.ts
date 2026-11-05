@@ -31,7 +31,8 @@ export type FireResult = { ok: true; worker: Worker; removedEntries: number; clo
 // «сьогодні» 21.08, а реально останній день 13.08). Правиться запис журналу `fired` (його
 // effective_date читає календар), fired_at і умови, закриті ЦИМ звільненням (date_to = стара дата).
 // Подія — рядок журналу `fireDate` (було → стало) в «Історії змін».
-export async function changeFireDate(workerId: number, date: string, adminId: number | null): Promise<{ ok: true; from: string | null; to: string; contracts: number } | { ok: false; error: string }> {
+export type FireDateResult = { ok: true; from: string | null; to: string; contracts: number; zwuaTasks: number; docsRegenerated: number; staleDocs: { contractId: number; kind: string; status: string }[] } | { ok: false; error: string };
+export async function changeFireDate(workerId: number, date: string, adminId: number | null): Promise<FireDateResult> {
   if (!isDate(date)) return { ok: false, error: "Невірна дата" };
   if (date > warsawToday()) return { ok: false, error: "Дата звільнення не може бути в майбутньому" };
   const [w] = await db.select().from(workersTable).where(eq(workersTable.id, workerId));
@@ -40,14 +41,30 @@ export async function changeFireDate(workerId: number, date: string, adminId: nu
   const [fj] = await db.select().from(workerChangesTable)
     .where(and(eq(workerChangesTable.workerId, workerId), eq(workerChangesTable.field, "fired"))).orderBy(desc(workerChangesTable.id)).limit(1);
   const from = fj?.effectiveDate ? String(fj.effectiveDate) : (w.firedAt ? w.firedAt.toLocaleDateString("sv-SE", { timeZone: "Europe/Warsaw" }) : null);
-  if (from === date) return { ok: true, from, to: date, contracts: 0 };
+  // та сама дата — основне вже на місці, але похідне (ZWUA, документи) дооновлюємо: попередній виклик
+  // міг упасти на ньому, і повтор з тією ж датою інакше нічого б не виправив (ревʼю codex 05.11.2026)
+  if (from === date) {
+    const { eventContractIds } = await import("./contractEndDocs");
+    const same = await db.select({ id: contractsTable.id }).from(contractsTable).where(and(eq(contractsTable.workerId, workerId), eq(contractsTable.status, "signed"), eq(contractsTable.dateTo, date)));
+    const ev = await eventContractIds(same.map(c => c.id));
+    const d = await refreshFireDateDerived({ id: w.id, fullName: w.fullName }, same.map(c => c.id).filter(id => !ev.has(id)), date, adminId);
+    return { ok: true, from, to: date, contracts: 0, ...d };
+  }
   if (fj) await db.update(workerChangesTable).set({ effectiveDate: date }).where(eq(workerChangesTable.id, fj.id));
   else await db.insert(workerChangesTable).values({ workerId, field: "fired", oldValue: "active", newValue: "fired", effectiveDate: date, adminId });
   await db.update(workersTable).set({ firedAt: new Date(`${date}T12:00:00`) }).where(eq(workersTable.id, workerId));
-  // умови, які закрило саме звільнення (date_to = стара дата), — на нову дату
-  const moved = from ? await db.update(contractsTable).set({ dateTo: date, updatedAt: new Date() })
-    .where(and(eq(contractsTable.workerId, workerId), eq(contractsTable.status, "signed"), eq(contractsTable.dateTo, from)))
-    .returning({ id: contractsTable.id }) : [];
+  // умови, які закрило саме звільнення (date_to = стара дата), — на нову дату. Подієві документи
+  // (zaświadczenie/wypowiedzenie — теж рядки contracts зі статусом signed) сюди НЕ входять: їхній
+  // PDF несе стару дату, тож і поле лишається чесним; ними займається refreshTerminationDocs
+  let moved: { id: number }[] = [];
+  if (from) {
+    const { eventContractIds } = await import("./contractEndDocs");
+    const cand = await db.select({ id: contractsTable.id }).from(contractsTable)
+      .where(and(eq(contractsTable.workerId, workerId), eq(contractsTable.status, "signed"), eq(contractsTable.dateTo, from)));
+    const ev = await eventContractIds(cand.map(c => c.id));
+    const ids = cand.map(c => c.id).filter(id => !ev.has(id));
+    if (ids.length) moved = await db.update(contractsTable).set({ dateTo: date, updatedAt: new Date() }).where(inArray(contractsTable.id, ids)).returning({ id: contractsTable.id });
+  }
   // той самий інваріант, що й у fireWorker: нерозіслані записи графіку після (нової) дати — геть (ревʼю codex 29.10.2026)
   const future = await db.select({ id: scheduleEntriesTable.id, day: scheduleEntriesTable.dayOfWeek, weekStart: scheduleWeeksTable.weekStart })
     .from(scheduleEntriesTable).innerJoin(scheduleWeeksTable, eq(scheduleEntriesTable.weekId, scheduleWeeksTable.id))
@@ -58,8 +75,28 @@ export async function changeFireDate(workerId: number, date: string, adminId: nu
     .catch(err => logger.error({ err }, "worker change journal failed"));
   try { const { workerLegalityChanged } = await import("./documentEvents"); await workerLegalityChanged(workerId); }
   catch (e) { logger.warn({ err: String(e), workerId }, "fire date: legality recompute failed"); }
-  logger.info({ workerId, from, to: date, contracts: moved.length, adminId }, "fire date changed");
-  return { ok: true, from, to: date, contracts: moved.length };
+  // похідне від дати звільнення (05.11.2026: раніше лишалось зі старою датою): задачі ZWUA — опис
+  // «дата звільнення / виреєстрування = +1 день» і строк; документи звільнення умов, закритих цим
+  // звільненням, — ще не надіслані перегенеровуються, надіслані/підписані повертаються списком
+  const d = await refreshFireDateDerived({ id: w.id, fullName: w.fullName }, moved.map(c => c.id), date, adminId);
+  logger.info({ workerId, from, to: date, contracts: moved.length, zwuaTasks: d.zwuaTasks, docsRegenerated: d.docsRegenerated, staleDocs: d.staleDocs.length, adminId }, "fire date changed");
+  return { ok: true, from, to: date, contracts: moved.length, ...d };
+}
+
+type FireDateDerived = { zwuaTasks: number; docsRegenerated: number; staleDocs: { contractId: number; kind: string; status: string }[] };
+// Ідемпотентно: задача ZWUA з уже правильною датою і документ з уже правильною датою пропускаються.
+async function refreshFireDateDerived(worker: { id: number; fullName: string }, contractIds: number[], date: string, adminId: number | null): Promise<FireDateDerived> {
+  const out: FireDateDerived = { zwuaTasks: 0, docsRegenerated: 0, staleDocs: [] };
+  try {
+    const { refreshZwuaTasks } = await import("./terminationFlow");
+    out.zwuaTasks = await refreshZwuaTasks(worker.id, date);
+  } catch (e) { logger.warn({ err: String(e), workerId: worker.id }, "fire date: zwua tasks refresh failed"); }
+  try {
+    const { refreshTerminationDocs } = await import("./contractEndDocs");
+    const r = await refreshTerminationDocs(worker, contractIds, date, adminId);
+    out.docsRegenerated = r.regenerated; out.staleDocs = r.stale;
+  } catch (e) { logger.warn({ err: String(e), workerId: worker.id }, "fire date: termination docs refresh failed"); }
+  return out;
 }
 
 export async function fireWorker(opts: FireOpts): Promise<FireResult> {

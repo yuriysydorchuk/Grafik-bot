@@ -39,7 +39,13 @@ export interface TaskContext {
   absences?: string[];
   reasons?: { code: string; axis?: string; severity?: string; params?: Record<string, unknown> }[];
   ua?: { stage: 1 | 2; rows: UaRow[] }; // ланцюжок powiadomienie UA (групова задача)
+  fireReview?: { rows: FireReviewRow[]; done: FireReviewDone[] }; // звільнення з обліку годин (групова задача)
 }
+// рядок людини в задачі «звільнення з обліку годин»: check — уже звільнений, перевіряється сама дата;
+// last — останній слід роботи (exact=false — лише з точністю до місяця, точну дату дає lastExact)
+export interface FireReviewPoint { date: string; source: string; exact: boolean }
+export interface FireReviewRow { id: number; name: string; factoryId: number | null; month: string | null; check?: boolean; active: boolean; firedDate: string | null; otherFactories: number; last: (FireReviewPoint & { lastExact: FireReviewPoint | null }) | null }
+export interface FireReviewDone { id: number; name: string; outcome: "fired" | "factory_end" | "keep" | "vacation" | "not_started" | "date" | "date_ok" | "gone"; date?: string | null }
 // рядок людини в груповій задачі powiadomienie
 export interface UaRow { id: number; name: string; factoryId: number | null; factoryName: string | null; companyId?: number | null; companyName?: string | null; start: string | null; dueAt: string; daysLeft: number; sentAt?: string | null; submittedAt?: string | null; fired?: boolean; missing: string[]; docId: number | null; docFileUrl: string | null; nationality: string | null; steps: { data: boolean; submitted: boolean; entered: boolean } }
 export interface UaCardField { key: string; label: string; value: string; required?: boolean; source?: string }
@@ -66,19 +72,19 @@ export const SOURCE_LABEL: Record<string, string> = {
   manual: "ручна", "auto:doc_expiring": "авто · документ", "auto:doc_expired": "авто · прострочений документ", "auto:contract": "авто · умова",
   "auto:obligation": "авто · обов'язок", "auto:required_missing": "авто · бракує підстави", "auto:pending_doc": "авто · перевірка файлу",
   "auto:payroll_change": "авто · виплати", "auto:review_required": "авто · перевірка", "auto:absence_unexplained": "авто · пропуск", "auto:candidate_stale": "авто · рекрутинг",
-  feedback: "зголошення", "auto:doc_no_response": "авто · не надіслав документ", "auto:ua_notification": "авто · powiadomienie", "auto:termination_zus": "авто · ZUS: виреєстрування (ZWUA)", "auto:hire_zus": "авто · ZUS: зголошення (ZUA / студент — Gratyfikant)", "auto:termination_doc": "авто · звільнення: документи",
+  feedback: "зголошення", "auto:doc_no_response": "авто · не надіслав документ", "auto:ua_notification": "авто · powiadomienie", "auto:termination_zus": "авто · ZUS: виреєстрування (ZWUA)", "auto:hire_zus": "авто · ZUS: зголошення (ZUA / студент — Gratyfikant)", "auto:termination_doc": "авто · звільнення: документи", "auto:fire_review": "авто · звільнення з обліку годин",
 };
 // Групи у фільтрі «Джерело» (зголошення #13, 03.11.2026): ZUS-зголошення й виреєстрування поруч,
 // плюс груповий пункт — у value кілька джерел через кому (бекенд → inArray)
 export const SOURCE_GROUPS: { label: string; all?: { value: string; label: string }; keys: string[] }[] = [
-  { label: "ZUS і звільнення", all: { value: "hire_zus,termination_zus", label: "ZUS: зголошення + виреєстрування" }, keys: ["hire_zus", "termination_zus", "termination_doc"] },
+  { label: "ZUS і звільнення", all: { value: "hire_zus,termination_zus", label: "ZUS: зголошення + виреєстрування" }, keys: ["hire_zus", "termination_zus", "termination_doc", "fire_review"] },
   { label: "Документи й легальність", keys: ["doc_expiring", "doc_expired", "pending_doc", "doc_no_response", "required_missing", "contract", "obligation", "ua_notification", "review_required"] },
 ];
 export const KIND_LABEL: Record<TaskKind, string> = { task: "задача", group: "групова", meeting: "зустріч" };
 export const RULE_LABEL: Record<string, string> = {
   doc_expiring: "документ спливає", doc_expired: "документ прострочений", contract: "умова", obligation: "обовʼязок", required_missing: "бракує підстави",
   pending_doc: "перевірка файлу", payroll_change: "зміна виплат", review_required: "перевірка движка", absence_unexplained: "пропуск без пояснення", candidate_stale: "кандидат без руху",
-  doc_no_response: "не надіслав документ", ua_notification: "powiadomienie UA", termination_zus: "ZUS ZWUA після звільнення", hire_zus: "зголошення нового працівника", termination_doc: "документ звільнення",
+  doc_no_response: "не надіслав документ", ua_notification: "powiadomienie UA", termination_zus: "ZUS ZWUA після звільнення", hire_zus: "зголошення нового працівника", termination_doc: "документ звільнення", fire_review: "звільнення з обліку годин",
 };
 
 // ── «Календар працівників» (GET /workers-calendar) ──

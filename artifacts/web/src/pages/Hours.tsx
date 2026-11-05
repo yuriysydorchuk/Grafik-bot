@@ -16,6 +16,7 @@ import { useOrderPref, orderBy, useDragOrder, mergeVisibleOrder } from "../lib/p
 import { FIRM_TAB } from "../lib/colors";
 import { SearchBox, matchesQuery } from "../components/SearchBox";
 import { useSessionState } from "../lib/nav";
+import { useOpenTask } from "../components/TaskBits";
 
 interface Dispute { workerId: number; status: string }
 
@@ -40,7 +41,7 @@ interface HourRow {
 interface Group { key: string; name: string; factoryId: number | null; firm: string | null; city: string; n: number; rows: HourRow[]; shifts: number; weekendShifts: number; hours: number; net: number }
 // активний працівник, прихований з місяця (hours_month_exclusions)
 interface ExcludedInfo { workerId: number; name: string; factoryId: number | null; reason: string }
-const EXCL_REASON_LABEL: Record<string, string> = { manual: "прибрано", vacation: "відпустка", not_started: "ще не приступив" };
+const EXCL_REASON_LABEL: Record<string, string> = { manual: "прибрано", vacation: "відпустка", not_started: "ще не приступив", fire_pending: "очікує звільнення" };
 const todayStr = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
 const ddmm = (iso: string) => `${iso.slice(8, 10)}.${iso.slice(5, 7)}`;
 const weekLabelOf = (ws: string) => { const e = new Date(ws + "T00:00:00"); e.setDate(e.getDate() + 6); return `${ddmm(ws)}–${String(e.getDate()).padStart(2, "0")}.${String(e.getMonth() + 1).padStart(2, "0")}`; };
@@ -120,7 +121,9 @@ export default function Hours() {
   // мультивибір рядків (по людині) → групові дії: прибрати зі списку місяця / звільнити з датою
   const [selWorkers, setSelWorkers] = useState<Record<number, boolean>>({});
   useEffect(() => setSelWorkers({}), [month]);
-  const [fireIds, setFireIds] = useState<number[] | null>(null);       // модалка звільнення
+  const [fireIds, setFireIds] = useState<number[] | null>(null);       // модалка «на звільнення» (задача графіковому)
+  const taskDrawer = useOpenTask();                                      // задача звільнення, якщо графіковий — це я
+  const openMyFireTask = (tasks: { taskId: number; mine: boolean }[]) => { const m = tasks.find(x => x.mine); if (m) taskDrawer.setOpenId(m.taskId); };
   const [hiddenFor, setHiddenFor] = useState<{ factoryId: number | null; name: string } | null>(null); // модалка «приховані»
   const [leftoverKey, setLeftoverKey] = useState<string | null>(null); // «залишки» після імпорту годин
   const { data: allFactories = [] } = useQuery<{ id: number; name: string; city?: string | null }[]>({ queryKey: ["factories"], queryFn: () => get("/factories") });
@@ -823,16 +826,19 @@ export default function Hours() {
             {t("Прибрати зі списку місяця")}
           </button>
           <button onClick={() => setFireIds(selIds)}
+            title={t("Одразу нікого не звільняє — графіковий фабрики отримає задачу перевірити дату й звільнити")}
             className="rounded-lg border border-rose-200 bg-rose-50 px-2.5 py-1.5 text-xs font-medium text-rose-700 hover:bg-rose-100">
-            {t("Звільнити…")}
+            {t("На звільнення…")}
           </button>
           <button onClick={() => setSelWorkers({})} className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100"><X className="h-4 w-4" /></button>
         </div>
       )}
       {fireIds && (
-        <FireWorkersModal workers={fireIds.map(id => ({ id, name: nameById.get(id) ?? `#${id}` }))}
-          onClose={() => setFireIds(null)} onDone={() => setSelWorkers({})} />
+        <FireWorkersModal month={month}
+          workers={fireIds.map(id => { const row = (data?.workers ?? []).find(w => w.workerId === id); return { id, name: row?.name ?? `#${id}`, factoryId: row?.factoryId ?? null }; })}
+          onClose={() => setFireIds(null)} onDone={tasks => { setSelWorkers({}); openMyFireTask(tasks); }} />
       )}
+      {taskDrawer.drawer}
       {hiddenFor && (
         <HiddenWorkersModal name={hiddenFor.name} month={month}
           items={(data?.excluded ?? []).filter(e => e.factoryId === hiddenFor.factoryId)}
@@ -842,7 +848,7 @@ export default function Hours() {
         const lg = groups.find(g => g.key === leftoverKey);
         const leftovers = lg ? lg.rows.filter(r => r.shifts === 0 && r.reportHours == null && r.factoryHours == null) : [];
         return lg && leftovers.length > 0
-          ? <LeftoversModal group={lg} leftovers={leftovers} month={month} onClose={() => setLeftoverKey(null)} />
+          ? <LeftoversModal group={lg} leftovers={leftovers} month={month} onClose={() => setLeftoverKey(null)} onFireTasks={openMyFireTask} />
           : null;
       })()}
       {(() => {
@@ -1698,54 +1704,53 @@ function FactoryKeysModal({ group, onClose }: { group: Group; onClose: () => voi
   );
 }
 
-// Звільнення вибраних із датою «від коли». Перед підтвердженням — перевірка
-// конфліктів: якщо у людини є дані (явки/дні фабрики/рапорти) ПІЗНІШІ за дату
-// звільнення, показується попередження. Дані після звільнення не видаляються —
-// сводна позначає такий період як «не оформлений».
-function FireWorkersModal({ workers, onClose, onDone }: { workers: { id: number; name: string }[]; onClose: () => void; onDone?: () => void }) {
+// Звільнення з обліку годин — НЕ одразу, а задачею графіковому фабрики (рішення власника
+// 05.11.2026: 29 людей звільнили однією датою 01.10 при реальних останніх змінах 4–28.09).
+// Люди ховаються з місяця («очікує звільнення»), графіковий у задачі бачить останній слід
+// кожного і звільняє перевіреною датою — POST /hours/fire-review (services/fireReview.ts).
+interface FireReviewTask { taskId: number; factoryName: string | null; assigneeName: string; added: number; mine: boolean }
+async function sendFireReview(month: string, items: { workerId: number; factoryId: number | null }[]) {
+  return (await post<{ tasks: FireReviewTask[]; added: number }>("/hours/fire-review", { month, items })).tasks;
+}
+function fireReviewToast(t: (s: string, p?: any) => string, tasks: FireReviewTask[]) {
+  if (!tasks.length) { toast.error(t("Нікого не передано — люди вже звільнені")); return; }
+  toast.success(t("Передано на звільнення — задача: {who}", { who: [...new Set(tasks.map(x => x.assigneeName))].join(", ") }));
+}
+function FireWorkersModal({ workers, month, onClose, onDone }: { workers: { id: number; name: string; factoryId: number | null }[]; month: string; onClose: () => void; onDone?: (tasks: FireReviewTask[]) => void }) {
   const t = useT();
   const qc = useQueryClient();
-  const [date, setDate] = useState(todayStr());
-  const { data: acts = [] } = useQuery<{ workerId: number; date: string; source: string }[]>({
-    queryKey: ["last-activity", workers.map(w => w.id).sort().join(",")],
-    queryFn: async () => (await post<{ last: { workerId: number; date: string; source: string }[] }>("/hours/last-activity", { workerIds: workers.map(w => w.id) })).last,
-  });
-  const actBy = useMemo(() => new Map(acts.map(a => [a.workerId, a])), [acts]);
-  const conflicts = workers.filter(w => { const a = actBy.get(w.id); return a && a.date > date; });
-  const fire = useMutation({
-    mutationFn: async () => { for (const w of workers) await post(`/workers/${w.id}/fire`, { date }); },
-    onSuccess: () => {
-      toast.success(t("Звільнено: {n}", { n: workers.length }));
+  const send = useMutation({
+    mutationFn: () => sendFireReview(month, workers.map(w => ({ workerId: w.id, factoryId: w.factoryId }))),
+    onSuccess: (tasks) => {
+      fireReviewToast(t, tasks);
       qc.invalidateQueries({ queryKey: ["hours"] });
-      qc.invalidateQueries({ queryKey: ["workers"] });
-      onDone?.(); onClose();
+      qc.invalidateQueries({ queryKey: ["tasks"] }); qc.invalidateQueries({ queryKey: ["task-counters"] });
+      onDone?.(tasks); onClose();
     },
     onError: (e: any) => { toast.error(e.message); qc.invalidateQueries({ queryKey: ["hours"] }); },
   });
   return (
-    <Modal open onClose={onClose} title={t("Звільнити: {n} людей", { n: workers.length })} size="md">
+    <Modal open onClose={onClose} title={t("На звільнення: {n} людей", { n: workers.length })} size="md">
       <div className="space-y-3">
         <div className="max-h-48 overflow-y-auto rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-700">
           {workers.map(w => <div key={w.id}>{w.name}</div>)}
         </div>
-        <div>
-          <Label>{t("Дата звільнення (від коли)")}</Label>
-          <Input type="date" value={date} onChange={e => setDate(e.target.value)} className="mt-1 w-44" />
-        </div>
-        {conflicts.length > 0 && (
-          <div className="rounded-xl border border-amber-200 bg-amber-50/60 px-3 py-2 text-sm text-amber-700">
-            <span className="font-medium">{t("Є дані пізніші за дату звільнення — вони НЕ зникнуть, а сводна позначить цей період як «не оформлений»:")}</span>
-            <ul className="mt-1 space-y-0.5">
-              {conflicts.map(w => { const a = actBy.get(w.id)!; return <li key={w.id}>• {w.name} — {t("дані до {date} ({source})", { date: ddmm(a.date), source: t(a.source) })}</li>; })}
-            </ul>
-          </div>
-        )}
+        <FireReviewNote />
         <div className="flex justify-end gap-2">
           <Button variant="ghost" onClick={onClose}>{t("Скасувати")}</Button>
-          <Button onClick={() => fire.mutate()} loading={fire.isPending}>{t("Звільнити з {date}", { date: ddmm(date) })}</Button>
+          <Button onClick={() => send.mutate()} loading={send.isPending}>{t("Передати графіковому")}</Button>
         </div>
       </div>
     </Modal>
+  );
+}
+function FireReviewNote() {
+  const t = useT();
+  return (
+    <div className="rounded-xl border border-amber-200 bg-amber-50/60 px-3 py-2 text-sm text-amber-800">
+      <div className="font-medium">{t("Одразу нікого не буде звільнено.")}</div>
+      <div className="mt-0.5">{t("Графіковий фабрики отримає задачу: перевірити, від коли людина точно не працює, і звільнити датою останнього робочого дня. Зі списку цього місяця люди зникнуть з позначкою «очікує звільнення».")}</div>
+    </div>
   );
 }
 
@@ -1789,12 +1794,11 @@ function HiddenWorkersModal({ name, month, items, onClose }: { name: string; mon
 // «Залишки» після імпорту годин фабрики: активні люди вкладки БЕЗ годин з
 // файлу, без рапорту і без явок місяця — ймовірно вже не працюють тут. По
 // кожному вибір дії + масове застосування до всіх.
-function LeftoversModal({ group, leftovers, month, onClose }: { group: Group; leftovers: HourRow[]; month: string; onClose: () => void }) {
+function LeftoversModal({ group, leftovers, month, onClose, onFireTasks }: { group: Group; leftovers: HourRow[]; month: string; onClose: () => void; onFireTasks?: (tasks: FireReviewTask[]) => void }) {
   const t = useT();
   const qc = useQueryClient();
   type Act = "keep" | "fire" | "vacation" | "not_started";
   const [action, setAction] = useState<Record<number, Act>>({});
-  const [date, setDate] = useState(todayStr());
   const actOf = (id: number): Act => action[id] ?? "keep";
   const setAll = (a: Act) => setAction(Object.fromEntries(leftovers.map(r => [r.workerId, a])));
   const nFire = leftovers.filter(r => actOf(r.workerId) === "fire").length;
@@ -1804,19 +1808,21 @@ function LeftoversModal({ group, leftovers, month, onClose }: { group: Group; le
       const fireIds = leftovers.filter(r => actOf(r.workerId) === "fire").map(r => r.workerId);
       const excl = leftovers.filter(r => ["vacation", "not_started"].includes(actOf(r.workerId)))
         .map(r => ({ workerId: r.workerId, reason: actOf(r.workerId) }));
-      for (const id of fireIds) await post(`/workers/${id}/fire`, { date });
+      // «звільнити» = задача графіковому (нікого не звільняємо одразу)
+      const tasks = fireIds.length ? await sendFireReview(month, leftovers.filter(r => fireIds.includes(r.workerId)).map(r => ({ workerId: r.workerId, factoryId: r.factoryId }))) : [];
       if (excl.length) await post("/hours/exclusions", { month, items: excl });
-      return { fired: fireIds.length, hidden: excl.length };
+      return { tasks, sent: fireIds.length, hidden: excl.length };
     },
     onSuccess: (r) => {
-      if (r.fired || r.hidden) toast.success(t("Готово: звільнено {f}, приховано {h}", { f: r.fired, h: r.hidden }));
+      if (r.sent) fireReviewToast(t, r.tasks);
+      if (r.hidden) toast.success(t("Приховано з місяця: {n}", { n: r.hidden }));
       qc.invalidateQueries({ queryKey: ["hours", month] });
-      qc.invalidateQueries({ queryKey: ["workers"] });
-      onClose();
+      qc.invalidateQueries({ queryKey: ["tasks"] }); qc.invalidateQueries({ queryKey: ["task-counters"] });
+      onClose(); onFireTasks?.(r.tasks);
     },
     onError: (e: any) => { toast.error(e.message); qc.invalidateQueries({ queryKey: ["hours", month] }); },
   });
-  const ACTS: [Act, string][] = [["keep", t("залишити")], ["fire", t("звільнити")], ["vacation", t("відпустка")], ["not_started", t("ще не приступив")]];
+  const ACTS: [Act, string][] = [["keep", t("залишити")], ["fire", t("на звільнення")], ["vacation", t("відпустка")], ["not_started", t("ще не приступив")]];
   return (
     <Modal open onClose={onClose} title={`${t("Люди без годин цього місяця")} — ${group.name}`} size="lg">
       <div className="space-y-3">
@@ -1829,11 +1835,8 @@ function LeftoversModal({ group, leftovers, month, onClose }: { group: Group; le
               {label}
             </button>
           ))}
-          <span className="ml-auto inline-flex items-center gap-1.5">
-            {t("Дата звільнення")}
-            <Input type="date" value={date} onChange={e => setDate(e.target.value)} className="w-40" />
-          </span>
         </div>
+        {nFire > 0 && <FireReviewNote />}
         <div className="max-h-[50vh] overflow-y-auto rounded-xl border border-slate-200">
           <table className="w-full text-sm">
             <tbody className="divide-y divide-slate-100">
@@ -1851,7 +1854,7 @@ function LeftoversModal({ group, leftovers, month, onClose }: { group: Group; le
           </table>
         </div>
         <div className="flex items-center justify-between">
-          <span className="text-xs text-slate-400">{nFire > 0 && t("Звільнено буде: {n} (з {date})", { n: nFire, date: ddmm(date) })}{nFire > 0 && nHide > 0 ? " · " : ""}{nHide > 0 && t("Приховано з місяця: {n}", { n: nHide })}</span>
+          <span className="text-xs text-slate-400">{nFire > 0 && t("На звільнення (задача графіковому): {n}", { n: nFire })}{nFire > 0 && nHide > 0 ? " · " : ""}{nHide > 0 && t("Приховано з місяця: {n}", { n: nHide })}</span>
           <div className="flex gap-2">
             <Button variant="ghost" onClick={onClose}>{t("Закрити")}</Button>
             <Button onClick={() => apply.mutate()} loading={apply.isPending} disabled={!nFire && !nHide}>{t("Застосувати")}</Button>

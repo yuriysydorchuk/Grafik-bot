@@ -8,7 +8,7 @@ import { X, CheckCircle2, Clock, Play, RotateCcw, Ban, Users, CalendarClock, Ext
 import { get, post, patch, upload, type Factory, type Worker } from "../lib/api";
 import { UaSubmitFlow, type UaQueueItem } from "./UaSubmitFlow";
 import {
-  type TaskRow, type TaskDetail, type TaskKind, type TaskPriority, type TaskAdmin, type TaskTemplate, type Recurrence, type TaskAction, type UaRow, type UaCard,
+  type TaskRow, type TaskDetail, type TaskKind, type TaskPriority, type TaskAdmin, type TaskTemplate, type Recurrence, type TaskAction, type UaRow, type UaCard, type FireReviewRow, type FireReviewDone,
   STATUS_LABEL, STATUS_BADGE, PRIORITY_LABEL, PRIORITY_CLS, PRIORITY_BORDER, SOURCE_LABEL, KIND_LABEL, RULE_LABEL, fmtD, fmtDShort, todayStr, addDays,
 } from "../lib/tasksApi";
 import { ProfileChangeModal } from "./ProfileChangeModal";
@@ -514,10 +514,11 @@ function ResolveBlock({ task, inv }: { task: TaskDetail; inv: () => void }) {
   const [bust, setBust] = useState(0);
   const v = (u: string) => (bust ? `${u}?v=${bust}` : u);
   const run = useMutation({
-    mutationFn: (v: { code: string; note?: string }) => post<{ message: string; questionnaireDiff?: PassportDiff | null }>(`/tasks/${task.id}/action/${v.code}`, { note: v.note }),
+    mutationFn: (v: { code: string; note?: string; date?: string }) => post<{ message: string; questionnaireDiff?: PassportDiff | null }>(`/tasks/${task.id}/action/${v.code}`, { note: v.note, date: v.date }),
     onSuccess: (d) => {
       toast.success(d.message); inv(); qc.invalidateQueries({ queryKey: ["worker-docs"] }); qc.invalidateQueries({ queryKey: ["worker-legality"] }); setNoteFor(null); setNote("");
       qc.invalidateQueries({ queryKey: ["worker-questionnaire"] }); qc.invalidateQueries({ queryKey: ["worker-changes"] });
+      if (c.fireReview) { qc.invalidateQueries({ queryKey: ["workers"] }); qc.invalidateQueries({ queryKey: ["worker"] }); qc.invalidateQueries({ queryKey: ["hours"] }); invalidateTasks(qc); }
       setPassportDiff(d.questionnaireDiff ?? null);
     },
     onError: (e: any) => toast.error(e.message),
@@ -576,6 +577,7 @@ function ResolveBlock({ task, inv }: { task: TaskDetail; inv: () => void }) {
       {c.absences && c.absences.length > 0 && <div className="mb-2 text-xs text-slate-600">{tr("Пропуски без пояснення")}: <b>{c.absences.map(fmtD).join(", ")}</b></div>}
       {c.reasons && c.reasons.length > 0 && <ul className="mb-2 space-y-0.5 text-xs text-slate-600">{c.reasons.map((r, i) => <li key={i}>• {reasonText(tr, r as any)}</li>)}</ul>}
       {c.ua && <UaBlock taskId={task.id} ua={c.ua} run={code => run.mutate({ code })} busy={run.isPending} inv={inv} />}
+      {c.fireReview && <FireReviewBlock rows={c.fireReview.rows} done={c.fireReview.done} run={(code, date) => run.mutate({ code, date })} busy={run.isPending} />}
 
       <div className="flex flex-wrap gap-1.5">
         {actions.filter(a => !/^ua_(send|card|submitted)\./.test(a.code)).map(a => a.kind === "link"
@@ -606,6 +608,78 @@ function ResolveBlock({ task, inv }: { task: TaskDetail; inv: () => void }) {
       )}
       {passportDiff && <PassportAnketaSyncModal diff={passportDiff} applying={run.isPending}
         onApply={() => run.mutate({ code: `passport_to_anketa.${passportDiff.documentId}` })} onClose={() => setPassportDiff(null)} />}
+    </div>
+  );
+}
+
+// Задача «звільнення з обліку годин» (services/fireReview.ts): по кожній людині — останній слід
+// роботи й дата звільнення (підставляється останній робочий день, якщо слід точний; інакше
+// графіковий вводить сам). Рядок `check` — людина вже звільнена, перевіряється сама дата.
+const FR_OUTCOME: Record<FireReviewDone["outcome"], string> = { fired: "звільнено", factory_end: "знято з фабрики", keep: "працює далі", vacation: "відпустка", not_started: "ще не приступив", date: "дату виправлено", date_ok: "дата правильна", gone: "вирішено поза задачею" };
+function FireReviewBlock({ rows, done, run, busy }: { rows: FireReviewRow[]; done: FireReviewDone[]; run: (code: string, date?: string) => void; busy: boolean }) {
+  const tr = useT();
+  const today = todayStr();
+  // підказка дати: останній точний слід, якщо він і є найсвіжішим; місячний слід (рапорт / години без днів) дати не дає
+  const suggest = (r: FireReviewRow) => (r.last?.exact ? r.last.date : "");
+  const [dates, setDates] = useState<Record<number, string>>({});
+  const dateOf = (r: FireReviewRow) => dates[r.id] ?? suggest(r);
+  const monthOf = (d: string) => `${d.slice(5, 7)}.${d.slice(0, 4)}`;
+  const trace = (r: FireReviewRow) => {
+    if (!r.last) return <span className="font-semibold text-rose-600">{tr("слідів роботи немає")}</span>;
+    const l = r.last;
+    return (
+      <span className="text-slate-600">
+        {tr("останній слід")}: <b className="text-slate-800">{l.exact ? fmtD(l.date) : monthOf(l.date)}</b> · {tr(l.source)}
+        {!l.exact && <span className="text-amber-700"> · {tr("лише місяць, без днів")}</span>}
+        {!l.exact && l.lastExact && <span> · {tr("остання точна дата")}: <b className="text-slate-800">{fmtD(l.lastExact.date)}</b> ({tr(l.lastExact.source)})</span>}
+      </span>
+    );
+  };
+  const b = "rounded-md border px-2 py-0.5 disabled:opacity-50";
+  return (
+    <div className="mb-2 rounded-md border border-slate-100 bg-white text-xs">
+      <div className="border-b border-slate-100 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-slate-500">{tr("Чекають рішення")} · {rows.length}</div>
+      {!rows.length && <div className="px-3 py-2 text-slate-400">{tr("Список порожній — по всіх прийнято рішення")}</div>}
+      <ul className="divide-y divide-slate-50">
+        {rows.map(r => {
+          const d = dateOf(r);
+          const bad = !d || d > today;
+          const early = !!d && !!r.last?.lastExact && d < r.last.lastExact.date;
+          return (
+            <li key={r.id} className="space-y-1 px-3 py-2">
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                <Link href={`/workers/${r.id}`} className="font-medium text-slate-800 hover:text-red-600">{r.name}</Link>
+                {r.check && <span className="rounded bg-rose-50 px-1.5 py-0.5 text-[10px] font-semibold text-rose-700">{tr("звільнений")}{r.firedDate ? ` ${tr("з")} ${fmtD(r.firedDate)}` : ""}</span>}
+                {!r.check && r.otherFactories > 0 && <span className="rounded bg-sky-50 px-1.5 py-0.5 text-[10px] font-semibold text-sky-700" title={tr("Звільнення зніме людину лише з цієї фабрики — на інших вона лишиться")}>{tr("працює ще на {n} фабр.", { n: r.otherFactories })}</span>}
+                {trace(r)}
+              </div>
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="text-slate-500">{r.check ? tr("Правильна дата звільнення") : tr("Останній робочий день")}</span>
+                <input type="date" value={d} max={today} onChange={e => setDates(s => ({ ...s, [r.id]: e.target.value }))}
+                  className={cn("rounded-md border bg-white px-1.5 py-0.5 text-xs", !d ? "border-amber-300" : "border-slate-200")} />
+                {r.check
+                  ? <>
+                      <button disabled={busy || bad || d === r.firedDate} onClick={() => run(`fr_date.${r.id}`, d)} className={cn(b, "border-violet-600 bg-violet-600 font-semibold text-white hover:bg-violet-700")}>{tr("Змінити дату")}</button>
+                      <button disabled={busy} onClick={() => run(`fr_date_ok.${r.id}`)} className={cn(b, "border-slate-200 bg-white text-slate-700 hover:bg-slate-50")}>{tr("Дата правильна")}</button>
+                    </>
+                  : <>
+                      <button disabled={busy || bad} onClick={() => { if (confirm(tr("Звільнити {name} з {date}?", { name: r.name, date: fmtD(d) }))) run(`fr_fire.${r.id}`, d); }} className={cn(b, "border-rose-600 bg-rose-600 font-semibold text-white hover:bg-rose-700")}>{tr("Звільнити")}</button>
+                      <button disabled={busy} onClick={() => run(`fr_keep.${r.id}`)} className={cn(b, "border-slate-200 bg-white text-slate-700 hover:bg-slate-50")}>{tr("Працює далі")}</button>
+                      <button disabled={busy} onClick={() => run(`fr_vacation.${r.id}`)} className={cn(b, "border-slate-200 bg-white text-slate-700 hover:bg-slate-50")}>{tr("Відпустка")}</button>
+                      <button disabled={busy} onClick={() => run(`fr_not_started.${r.id}`)} className={cn(b, "border-slate-200 bg-white text-slate-700 hover:bg-slate-50")}>{tr("Ще не приступив")}</button>
+                    </>}
+              </div>
+              {!d && <div className="text-[11px] text-amber-700">{tr("Точної дати система не знає — зʼясуйте останній робочий день і впишіть його")}</div>}
+              {early && <div className="text-[11px] text-amber-700">⚠ {tr("Дата раніша за останній слід ({date}) — дані після неї лишаться, сводна позначить їх як «не оформлений»", { date: fmtD(r.last!.lastExact!.date) })}</div>}
+            </li>
+          );
+        })}
+      </ul>
+      {done.length > 0 && (
+        <div className="border-t border-slate-100 px-3 py-1.5 text-[11px] text-slate-500">
+          {tr("Вирішено")}: {done.map(x => `${x.name} — ${tr(FR_OUTCOME[x.outcome] ?? x.outcome)}${x.date ? ` ${fmtD(x.date)}` : ""}`).join(" · ")}
+        </div>
+      )}
     </div>
   );
 }

@@ -40,6 +40,22 @@ export async function zwuaTaskDescription(workerId: number, fireDate: string, co
 }
 
 
+// Дату звільнення виправлено (workerFire.changeFireDate): відкриті задачі ZWUA людини несуть стару
+// дату в описі («звільнення / виреєстрування = +1 день»), строку й autoParams — оновлюємо одразу
+// (нічний синк це робить лише для задач зі старим ключем zwua:<w>, задачі по фірмі — ніколи).
+export async function refreshZwuaTasks(workerId: number, fireDate: string): Promise<number> {
+  const open = await db.select().from(tasksTable).where(and(eq(tasksTable.workerId, workerId), eq(tasksTable.source, "auto:termination_zus"), inArray(tasksTable.status, OPEN_STATUSES)));
+  let n = 0;
+  for (const t of open) {
+    const p = (t.autoParams ?? {}) as { fireDate?: string; companyId?: number | null; factoryEnd?: boolean };
+    if (p.factoryEnd || p.fireDate === fireDate) continue; // виповідзення по фабриці має власну дату
+    const description = await zwuaTaskDescription(workerId, fireDate, p.companyId ?? null);
+    await db.update(tasksTable).set({ description, dueAt: addDaysStr(fireDate, 7), autoParams: { ...(t.autoParams ?? {}), fireDate }, updatedAt: new Date() }).where(eq(tasksTable.id, t.id));
+    n++;
+  }
+  return n;
+}
+
 export async function startTerminationFlow(worker: Worker, fireDate: string, actorAdminId: number | null, earlyContractIds: number[] = []): Promise<void> {
   // 2) ZUS ZWUA — завжди, крім звільнення датою ДО запуску модуля (settings.legacyBefore):
   //    таке заднім числом = історія, нічний скан (taskAutoRules) її теж не бере — інакше

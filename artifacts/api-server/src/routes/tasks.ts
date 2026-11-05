@@ -244,7 +244,7 @@ router.post("/tasks/:id/action/:code", TP, async (req: AuthedRequest, res) => {
   if (!t) return fail(res, 404, "Задачу не знайдено");
   if (!canManage(req) && !(await isParticipant(t, me(req))) && t.creatorAdminId !== me(req)) return fail(res, 403, "Не ваша задача");
   try {
-    const message = await runTaskAction(t, String(req.params.code), { adminId: me(req), name: req.admin!.name }, { note: req.body?.note });
+    const message = await runTaskAction(t, String(req.params.code), { adminId: me(req), name: req.admin!.name }, { note: req.body?.note, date: req.body?.date });
     // підтверджено паспорт → розбіжності з анкетою для модалки «оновити анкету?» (дія passport_to_anketa)
     let questionnaireDiff = null;
     const { code, param } = parseActionCode(String(req.params.code));

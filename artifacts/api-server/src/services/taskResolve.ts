@@ -35,6 +35,7 @@ export interface TaskContext {
   absences?: string[];
   reasons?: { code: string; axis?: string; severity?: string; params?: Record<string, unknown> }[];
   ua?: { stage: 1 | 2; rows: import("./uaNotification").UaContextRow[] }; // ланцюжок powiadomienie (групова задача)
+  fireReview?: { rows: import("./fireReview").FrContextRow[]; done: import("./fireReview").FrDone[] }; // звільнення з обліку годин (групова задача)
 }
 
 const CARD_CODES = new Set(["trc", "karta_stalego_pobytu", "rezydent_ue", "eu_family_member_card", "refugee_status", "subsidiary_protection", "humanitarian_stay", "tolerated_stay"]);
@@ -54,6 +55,7 @@ const CLOSES_WHEN: Record<string, string> = {
   termination_zus: "у профілі зʼявиться документ «ZUS ZWUA»",
   termination_doc: "документ буде надіслано працівнику на підпис",
   contract_end: "працівника звільнено або підписано аннекс/нову умову на цю фабрику",
+  fire_review: "по кожній людині зі списку буде прийнято рішення (список порожній)",
   zcna_file: "у профілі зʼявиться підтвердження ZUS ZCNA (документ типу «ZUS ZCNA»)",
 };
 const OBLIGATION_DOC: Record<string, string> = { "obligation.ua_notification": "powiadomienie_ua" };
@@ -299,6 +301,14 @@ export async function buildTaskResolution(task: Task): Promise<{ context: TaskCo
       }
       break;
     }
+    case "fire_review": {
+      // групова задача «звільнення з обліку годин»: список людей і дії по кожній — services/fireReview.ts
+      // (дії fr_* викликає блок списку у вебі з датою; у бот-кнопки не йдуть)
+      const fr = await import("./fireReview");
+      ctx.fireReview = await fr.frContext(task);
+      if (!ctx.fireReview.rows.length) satisfied.add("all_done");
+      break;
+    }
     case "zcna_file": {
       const ty = await typeByCode("zus_zcna");
       const c = task.contractId ? (await db.select().from(contractsTable).where(eq(contractsTable.id, task.contractId)))[0] : undefined;
@@ -407,7 +417,7 @@ async function syncAutoChecklist(task: Task, satisfied: Set<string>): Promise<bo
 }
 
 // Виконання дії. code може нести параметр: `verify_doc.123` (id документа). Повертає текст для тосту/бота.
-export async function runTaskAction(task: Task, rawCode: string, actor: { adminId: number; name?: string | null }, body: { note?: string } = {}): Promise<string> {
+export async function runTaskAction(task: Task, rawCode: string, actor: { adminId: number; name?: string | null }, body: { note?: string; date?: string } = {}): Promise<string> {
   const { code, param } = parseActionCode(rawCode);
   const { context } = await buildTaskResolution(task);
   const w = context.worker;
@@ -493,6 +503,17 @@ export async function runTaskAction(task: Task, rawCode: string, actor: { adminI
       const coSeg = rawCode.split(".")[2];
       const companyId = coSeg && Number(coSeg) > 0 ? Number(coSeg) : null;
       message = await (await import("./uaNotification")).uaMarkSubmitted(task, param, actor, companyId);
+      break;
+    }
+    // звільнення з обліку годин (services/fireReview.ts): fr_<дія>.<workerId>, дата — у тілі
+    case "fr_fire": case "fr_keep": case "fr_vacation": case "fr_not_started": case "fr_date": case "fr_date_ok": {
+      if (!param) throw new Error("Немає працівника");
+      if (context.rule !== "fire_review") throw new Error("Дія не для цієї задачі");
+      const fr = await import("./fireReview");
+      message = code === "fr_fire" ? await fr.frFire(task, param, body.date, actor)
+        : code === "fr_date" ? await fr.frDate(task, param, body.date, actor)
+        : code === "fr_date_ok" ? await fr.frDateOk(task, param, actor)
+        : await fr.frKeep(task, param, code === "fr_keep" ? "keep" : code === "fr_vacation" ? "vacation" : "not_started", actor);
       break;
     }
     case "deliver_doc": {

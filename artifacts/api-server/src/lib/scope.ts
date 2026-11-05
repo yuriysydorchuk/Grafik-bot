@@ -248,7 +248,7 @@ const SCOPE_RULES: Rule[] = [
   R("POST", /^\/hours\/(?:factory|factory-clear|factory-notify|factory-confirm|factory-apply|factory-codes-parse|factory-codes-apply|discrepancy-email|statement-email)$/, { kind: "bodyFactory" }),
   R("POST", /^\/workers$/, { kind: "bodyFactory" }),
   // workerId/масиви id звіряє гейт тіла; фабрику-фолбек, multipart і «всім» — хендлери
-  R("POST", /^\/hours\/(?:report|note|factory-parse|exclusions|exclusions-remove|last-activity|report-remind)$/, { kind: "free" }),
+  R("POST", /^\/hours\/(?:report|note|factory-parse|exclusions|exclusions-remove|last-activity|report-remind|fire-review)$/, { kind: "free" }),
   R("POST", /^\/(?:availability\/remind|absences\/remind|broadcast)$/, { kind: "free" }),
   R("PATCH,DELETE", /^\/schedule\/entry\/(\d+)(?:\/status)?$/, { kind: "lookup", table: "entry" }),
   R("POST", /^\/unplanned\/(\d+)\/link$/, { kind: "lookup", table: "unplanned" }),

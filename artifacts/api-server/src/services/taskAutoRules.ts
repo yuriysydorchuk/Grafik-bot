@@ -50,6 +50,8 @@ export const AUTO_RULE_DEFS: AutoRuleDef[] = [
   { code: "termination_doc", label: "Документ звільнення — надіслати на підпис", description: "Після звільнення: zaświadczenie o zatrudnieniu на кожну умову (печатка фірми вже стоїть) і wypowiedzenie від працівника, якщо звільнення раніше кінця умови → графікова надсилає лінк на підпис", leadDays: null, enabledByDefault: true, scheduler: true },
   // зголошення нового працівника (services/hireRegistration.ts): після підпису умови працівником
   { code: "hire_zus", label: "Зголосити нового працівника (ZUS ZUA / Gratyfikant)", description: "Одразу після підпису умови ОБОМА сторонами (працівник + фірма) — виконавцю ZUS: перевірити умову й документи, зголосити до ZUS (ZUA) по фірмі умови й додати в Gratyfikant; студент до 26 — лише Gratyfikant, без ZUS. Закривається, коли ZUA внесено в профіль (студент — вручну)", leadDays: 7, enabledByDefault: true },
+  // звільнення з обліку годин (services/fireReview.ts): «звільнити» на /hours нікого не звільняє — графіковому список з останнім слідом кожного
+  { code: "fire_review", label: "Звільнення з обліку годин — перевірити дату", description: "Людей без годин за місяць, переданих на звільнення з обліку годин, не звільняємо одразу: графіковий фабрики бачить останній робочий слід кожного і звільняє перевіреною датою (або лишає: працює далі / відпустка / ще не приступив). Закривається, коли по всіх прийнято рішення", leadDays: null, enabledByDefault: true, scheduler: true },
   { code: "termination_zus", label: "Виреєструвати з ZUS (ZWUA)", description: "Після звільнення — 7 днів на ZWUA; закривається, коли документ ZUS ZWUA внесено в профіль", leadDays: 7, enabledByDefault: true },
   // SMS-кампанії (services/sms/automation.ts): групова задача на кампанію — подзвонити тим, хто відкрив сторінку, але в бот не зайшов
   { code: "sms_no_bot", label: "SMS: відкрили сторінку, не зайшли в бот", description: "Отримувачі SMS-кампанії відкрили персональну сторінку N+ днів тому і не зайшли в бот — список на обдзвон рекрутеру кампанії (вікно 7 днів)", leadDays: 2, enabledByDefault: true },
@@ -438,7 +440,10 @@ export async function runAutoTasks(today = warsawToday()): Promise<AutoRunStats>
   catch (e: any) { logger.warn({ err: e?.message }, "doc auto-request failed"); }
   const candidates = await collectCandidates(today);
   // групові задачі ланцюжка powiadomienie живуть своїм синком (списки людей), не кандидатами
-  const existing = (await db.select().from(tasksTable).where(like(tasksTable.source, "auto:%"))).filter(t => t.source !== "auto:ua_notification");
+  // (так само — списки «звільнення з обліку годин», services/fireReview.ts)
+  const existing = (await db.select().from(tasksTable).where(like(tasksTable.source, "auto:%"))).filter(t => t.source !== "auto:ua_notification" && t.source !== "auto:fire_review");
+  try { stats.resolved += await (await import("./fireReview")).syncFireReviewTasks(); }
+  catch (e: any) { logger.warn({ err: e?.message }, "fire review sync failed"); }
   try { const ua = await (await import("./uaNotification")).syncUaNotificationTasks(today); stats.created += ua.created; stats.updated += ua.updated; stats.resolved += ua.resolved; }
   catch (e: any) { logger.warn({ err: e?.message }, "ua notification sync failed"); }
   const byKey = new Map(existing.filter(t => t.sourceKey).map(t => [t.sourceKey!, t]));

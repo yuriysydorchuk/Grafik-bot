@@ -253,6 +253,11 @@ export async function setTaskStatus(task: Task, next: TaskStatus, actorAdminId: 
     try { const { onFeedbackTaskDone } = await import("./feedback"); await onFeedbackTaskDone(task, actorAdminId); }
     catch (e: any) { logger.warn({ err: e?.message, taskId: task.id }, "feedback task-done hook failed"); }
   }
+  // задачу «звільнення з обліку годин» закрили вручну з людьми без рішення → вони повертаються в облік місяця
+  if ((to === "done" || to === "cancelled") && task.source === "auto:fire_review") {
+    try { const { frOnClosed } = await import("./fireReview"); await frOnClosed(task); }
+    catch (e: any) { logger.warn({ err: e?.message, taskId: task.id }, "fire review close hook failed"); }
+  }
   // повторювана: наступний екземпляр після виконання (не після скасування)
   if (to === "done" && task.status !== "done" && task.recurrence && task.source === "manual") { // повторний «done» не плодить наступний екземпляр
     const r = task.recurrence as Recurrence;

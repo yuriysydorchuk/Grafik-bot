@@ -90,6 +90,79 @@ async function workplacePhrase(workerId: number, companyId: number | null, from:
   return names.size > 1 ? `w ${co?.legalName ?? co?.name ?? "firmie"} (różni klienci)` : "";
 }
 
+// Сам документ (без задачі): пакет з шаблону виду, маркери авто-підпису фірми й умови-джерела,
+// печатка (zaświadczenie) або одразу approved (wypowiedzenie — підписує працівник).
+async function generateEventDoc(opts: {
+  kind: string; contract: typeof contractsTable.$inferSelect; worker: { id: number; fullName: string }; dateTo: string; stamp: boolean; actorAdminId: number | null; tpl: Tpl;
+}): Promise<{ docId: number; stamped: boolean }> {
+  const { contract: c, worker } = opts;
+  const doc = await generateContract({
+    workerId: worker.id, factoryId: c.factoryId, companyId: c.companyId ?? null, templateIds: [opts.tpl.id],
+    dateFrom: dateStr(c.dateFrom), dateTo: opts.dateTo, allowUnverified: true,
+    extraData: {
+      "Data zawarcia umowy": dateStr(c.dateFrom) ?? "", // «umowę zawartą dnia …» — дата оригінальної умови
+      "Miejsce pracy zaświadczenia": opts.kind === ZASW_KIND ? await workplacePhrase(worker.id, c.companyId ?? null, dateStr(c.dateFrom), opts.dateTo) : "",
+    },
+  });
+  await db.update(contractsTable).set({
+    data: sql`${contractsTable.data} || ${JSON.stringify({ [DATA_AUTO_FINALIZE]: "1", [DATA_SOURCE_CONTRACT]: String(c.id) })}::jsonb`, updatedAt: new Date(),
+  }).where(eq(contractsTable.id, doc.id));
+  let stamped = false;
+  if (opts.stamp) stamped = (await stampDraftWithCompany(doc.id, opts.actorAdminId)).stamped;
+  else await db.update(contractsTable).set({ status: "approved", updatedAt: new Date() }).where(eq(contractsTable.id, doc.id));
+  return { docId: doc.id, stamped };
+}
+
+// Дату звільнення виправлено (workerFire.changeFireDate, 05.11.2026): zaświadczenie й wypowiedzenie
+// умов, закритих цим звільненням, несуть стару дату. Ще НЕ надіслані (чернетка / затверджено) —
+// перегенеровуються з новою датою в тій самій задачі, старий пакет скасовується. Надіслані на
+// підпис і підписані не чіпаємо (документ уже в працівника) — повертаються списком для попередження.
+const UNSENT_DOC = new Set(["draft", "pending_approval", "approved"]);
+export async function refreshTerminationDocs(worker: { id: number; fullName: string }, contractIds: number[], newDate: string, actorAdminId: number | null): Promise<{ regenerated: number; stale: { contractId: number; kind: string; status: string }[] }> {
+  const res = { regenerated: 0, stale: [] as { contractId: number; kind: string; status: string }[] };
+  if (!contractIds.length) return res;
+  const sources = new Map((await db.select().from(contractsTable).where(inArray(contractsTable.id, contractIds))).map(c => [c.id, c]));
+  const docs = await db.select().from(contractsTable).where(and(
+    eq(contractsTable.workerId, worker.id), inArray(sql<string>`${contractsTable.data}->>${DATA_SOURCE_CONTRACT}`, contractIds.map(String)),
+    sql`${contractsTable.status} not in ('cancelled', 'superseded', 'declined', 'expired')`));
+  if (!docs.length) return res;
+  const kinds = new Map((await db.select({ contractId: contractFilesTable.contractId, kind: documentTemplatesTable.kind })
+    .from(contractFilesTable).innerJoin(documentTemplatesTable, eq(contractFilesTable.templateId, documentTemplatesTable.id))
+    .where(inArray(contractFilesTable.contractId, docs.map(d => d.id)))).map(r => [r.contractId, r.kind]));
+  for (const d of docs) {
+    const kind = kinds.get(d.id);
+    if (kind !== ZASW_KIND && kind !== WYPOW_KIND) continue; // аннекс / виповідзення на умові мають власні дати
+    if (dateStr(d.dateTo) === newDate) continue;
+    const src = sources.get(Number((d.data as Record<string, unknown> | null)?.[DATA_SOURCE_CONTRACT]));
+    if (!src) continue;
+    if (!UNSENT_DOC.has(d.status)) { res.stale.push({ contractId: d.id, kind, status: d.status }); continue; }
+    const tpl = await pickEventTemplate(kind, src.factoryId, src.companyId ?? null);
+    if (!tpl) { res.stale.push({ contractId: d.id, kind, status: d.status }); continue; }
+    try {
+      const { docId, stamped } = await generateEventDoc({ kind, contract: src, worker, dateTo: newDate, stamp: kind === ZASW_KIND, actorAdminId, tpl });
+      // старий пакет скасовуємо, лише якщо його ДОСІ не надіслали: поки йшла генерація, графіковий міг
+      // натиснути «надіслати» — тоді в працівника вже лежить старий документ, а зайвий — новий
+      const [old] = await db.update(contractsTable).set({ status: "cancelled", declineReason: `дату звільнення змінено на ${newDate} — документ перегенеровано (#${docId})`, updatedAt: new Date() })
+        .where(and(eq(contractsTable.id, d.id), inArray(contractsTable.status, [...UNSENT_DOC]))).returning({ id: contractsTable.id });
+      if (!old) {
+        await db.update(contractsTable).set({ status: "cancelled", declineReason: "попередній документ встигли надіслати — перегенерація не потрібна", updatedAt: new Date() }).where(eq(contractsTable.id, docId));
+        const [now] = await db.select({ status: contractsTable.status }).from(contractsTable).where(eq(contractsTable.id, d.id));
+        res.stale.push({ contractId: d.id, kind, status: now?.status ?? d.status });
+        continue;
+      }
+      await db.update(tasksTable).set({ contractId: docId, autoParams: sql`${tasksTable.autoParams} || ${JSON.stringify({ contractId: docId, stamped, dateTo: newDate })}::jsonb`, updatedAt: new Date() })
+        .where(and(eq(tasksTable.source, "auto:termination_doc"), eq(tasksTable.contractId, d.id)));
+      // виповідзення, збережене на самій умові (contracts.termination_doc_id), теж показує новий пакет
+      await db.update(contractsTable).set({ terminationDocId: docId }).where(and(eq(contractsTable.id, src.id), eq(contractsTable.terminationDocId, d.id)));
+      res.regenerated++;
+    } catch (e: any) {
+      logger.warn({ err: e?.message, kind, contractId: d.id, workerId: worker.id }, "termination doc regeneration failed");
+      res.stale.push({ contractId: d.id, kind, status: d.status });
+    }
+  }
+  return res;
+}
+
 // ── Документ звільнення для ОДНІЄЇ умови: zaświadczenie (з печаткою) або wypowiedzenie ──────
 export async function issueEventDoc(opts: {
   kind: string; contract: typeof contractsTable.$inferSelect; worker: { id: number; fullName: string }; dateTo: string;
@@ -120,20 +193,8 @@ export async function issueEventDocId(opts: {
     }, opts.actorAdminId);
   } catch { return null; }
   try {
-    const doc = await generateContract({
-      workerId: worker.id, factoryId: c.factoryId, companyId: c.companyId ?? null, templateIds: [tpl.id],
-      dateFrom: dateStr(c.dateFrom), dateTo: opts.dateTo, allowUnverified: true,
-      extraData: {
-        "Data zawarcia umowy": dateStr(c.dateFrom) ?? "", // «umowę zawartą dnia …» — дата оригінальної умови
-        "Miejsce pracy zaświadczenia": opts.kind === ZASW_KIND ? await workplacePhrase(worker.id, c.companyId ?? null, dateStr(c.dateFrom), opts.dateTo) : "",
-      },
-    });
-    await db.update(contractsTable).set({
-      data: sql`${contractsTable.data} || ${JSON.stringify({ [DATA_AUTO_FINALIZE]: "1", [DATA_SOURCE_CONTRACT]: String(c.id) })}::jsonb`, updatedAt: new Date(),
-    }).where(eq(contractsTable.id, doc.id));
-    let stamped = false;
-    if (opts.stamp) stamped = (await stampDraftWithCompany(doc.id, opts.actorAdminId)).stamped;
-    else await db.update(contractsTable).set({ status: "approved", updatedAt: new Date() }).where(eq(contractsTable.id, doc.id));
+    const { docId, stamped } = await generateEventDoc({ kind: opts.kind, contract: c, worker, dateTo: opts.dateTo, stamp: opts.stamp, actorAdminId: opts.actorAdminId, tpl });
+    const doc = { id: docId };
     await db.update(tasksTable).set({ contractId: doc.id, autoParams: sql`${tasksTable.autoParams} || ${JSON.stringify({ contractId: doc.id, stamped })}::jsonb`, updatedAt: new Date() }).where(eq(tasksTable.id, task.id));
     if (assignee) await notifyAdminById(assignee, "tasks", `📄 *${mdEsc(tpl.title)}* — ${mdEsc(worker.fullName)}: документ готовий, надішли на підпис (задача)`, { parse_mode: "Markdown" }).catch(() => {});
     return doc.id;

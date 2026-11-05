@@ -4909,31 +4909,28 @@ router.post("/hours/exclusions-remove", RW, async (req, res) => {
 router.post("/hours/last-activity", RW, async (req, res) => {
   const workerIds: number[] = Array.isArray(req.body?.workerIds) ? req.body.workerIds.map(Number).filter(Boolean) : [];
   if (!workerIds.length) return fail(res, 400, "workerIds обовʼязкові");
-  const monthLastDay = (m: string): string => {
-    const [yy, mm] = m.split("-").map(Number);
-    return `${m}-${String(new Date(yy!, mm!, 0).getDate()).padStart(2, "0")}`;
-  };
-  const last = new Map<number, { date: string; source: string }>();
-  const bump = (id: number, date: string, source: string) => {
-    const cur = last.get(id);
-    if (!cur || date > cur.date) last.set(id, { date, source });
-  };
-  const ents = await db.select({ workerId: scheduleEntriesTable.workerId, day: scheduleEntriesTable.dayOfWeek, weekStart: scheduleWeeksTable.weekStart })
-    .from(scheduleEntriesTable)
-    .leftJoin(scheduleWeeksTable, eq(scheduleEntriesTable.weekId, scheduleWeeksTable.id))
-    .where(and(accountingWeekSql, eq(scheduleEntriesTable.status, "present"), inArray(scheduleEntriesTable.workerId, workerIds)));
-  for (const e of ents) if (e.workerId) bump(e.workerId, entryDateStr(String(e.weekStart), e.day), "явка");
-  const fh = await db.select({ workerId: factoryHoursTable.workerId, month: factoryHoursTable.month, hours: factoryHoursTable.hours, days: factoryHoursTable.days })
-    .from(factoryHoursTable).where(inArray(factoryHoursTable.workerId, workerIds));
-  for (const r of fh) {
-    if (!r.hours || r.hours <= 0) continue;
-    const days = r.days && typeof r.days === "object" ? Object.keys(r.days).sort() : [];
-    bump(r.workerId, days.at(-1) ?? monthLastDay(r.month), "години фабрики");
-  }
-  const reps = await db.select({ workerId: monthlyReportsTable.workerId, month: monthlyReportsTable.month })
-    .from(monthlyReportsTable).where(inArray(monthlyReportsTable.workerId, workerIds));
-  for (const r of reps) bump(r.workerId, monthLastDay(r.month), "рапорт");
-  ok(res, { last: [...last.entries()].map(([workerId, v]) => ({ workerId, ...v })) });
+  const { loadLastActivity } = await import("../services/lastActivity");
+  const last = await loadLastActivity(workerIds);
+  ok(res, { last: [...last.entries()].map(([workerId, v]) => ({ workerId, date: v.date, source: v.source })) });
+});
+
+// Звільнення з обліку годин — НЕ одразу, а задачею графіковому фабрики (рішення власника 05.11.2026:
+// на початку листопада 29 людей звільнили однією датою 01.10, хоча останні зміни були 4–28.09):
+// людей ховаємо з місяця («очікує звільнення»), графіковий у задачі бачить останній слід кожного
+// й звільняє перевіреною датою — services/fireReview.ts.
+router.post("/hours/fire-review", RW, async (req, res) => {
+  const month = String(req.body?.month || "");
+  if (!/^\d{4}-\d{2}$/.test(month)) return fail(res, 400, "month=YYYY-MM обовʼязковий");
+  const items = (Array.isArray(req.body?.items) ? req.body.items : [])
+    .map((it: { workerId?: unknown; factoryId?: unknown }) => ({ workerId: Number(it?.workerId), factoryId: it?.factoryId != null && it.factoryId !== "" ? Number(it.factoryId) : null }))
+    .filter((it: { workerId: number }) => it.workerId > 0);
+  if (!items.length) return fail(res, 400, "Порожній список");
+  const { requestFireReview } = await import("../services/fireReview");
+  const me = (req as AuthedRequest).admin?.adminId ?? null;
+  // скоуп-адмін: задача лише на свою фабрику (людина з основною фабрикою поза скоупом іде по чинній своїй)
+  const frScope = (req as AuthedRequest).admin?.scope ?? null;
+  const tasks = await requestFireReview({ items, month, actorAdminId: me, factoryAllowed: frScope ? (fid => factoryInScope(frScope, fid)) : undefined });
+  ok(res, { tasks, added: tasks.reduce((s, t) => s + t.added, 0) });
 });
 
 // Позмінна звірка для листа: коли рапорт ≠ фабрика, але рапорт = нашим
