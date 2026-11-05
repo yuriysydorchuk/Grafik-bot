@@ -11,6 +11,7 @@ import { get, post, patch } from "../lib/api";
 import { Spinner, Badge, Button, Input, Modal, Label } from "./ui";
 import { useT } from "../lib/i18n";
 import { RecipientsPicker } from "./RecipientsPicker";
+import { ReportRetakeButton } from "./ReportRetake";
 
 type DayCell = {
   date: string;
@@ -192,13 +193,7 @@ export function HoursWeekView({ factoryId, month, weekStart, canEdit, onImport }
                     {r.hours || (r.hoursUnapproved ? <span className="text-amber-600" title={t("тиждень не затверджено")}>({r.hoursUnapproved})</span> : <span className="text-slate-300">0</span>)}
                   </td>
                   <td className={`px-3 py-1.5 text-right ${DIFF_CELL[ds]}`}>
-                    {rep != null ? (
-                      <span className="inline-flex items-center justify-end gap-1.5">
-                        <span className="font-semibold text-slate-700">{rep}</span>
-                        {r.report && Math.abs(r.report.daysSum - rep) > 0.01 && <span className="text-[11px] text-amber-600" title={t("Сума по вибраних змінах відрізняється від вписаного тоталу")}>({r.report.daysSum})</span>}
-                        {r.report?.photoLink && <a href={r.report.photoLink} target="_blank" rel="noreferrer" className="text-sky-600 hover:text-sky-800" title={t("Фото рапорту")} onClick={e => e.stopPropagation()}><Camera className="h-3.5 w-3.5" /></a>}
-                      </span>
-                    ) : <span className="text-slate-300">—</span>}
+                    <ReportWeekCell factoryId={factoryId} weekStart={weekStart} row={r} canEdit={canEdit} onSaved={invalidate} />
                   </td>
                   <td className={`px-3 py-1.5 text-right ${DIFF_CELL[ds]}`}>
                     <FactoryWeekCell factoryId={factoryId} weekStart={weekStart} row={r} canEdit={canEdit} onSaved={invalidate} />
@@ -524,6 +519,39 @@ function DayCellView({ c }: { c?: DayCell }) {
         </div>
       )}
     </div>
+  );
+}
+
+// Клітинка рапорту тижня: тотал працівника, сума по змінах, фото; офіс виправляє тотал вручну
+// (зголошення #31) — Enter зберігає, порожнє/Escape нічого не міняє. Дні й фото лишаються.
+function ReportWeekCell({ factoryId, weekStart, row, canEdit, onSaved }: { factoryId: number; weekStart: string; row: WeekRow; canEdit: boolean; onSaved: () => void }) {
+  const t = useT();
+  const [editing, setEditing] = useState(false);
+  const [val, setVal] = useState("");
+  const save = useMutation({
+    mutationFn: (hours: string) => post("/hours/weeks/report", { factoryId, weekStart, workerId: row.workerId, hours }),
+    onSuccess: () => { setEditing(false); onSaved(); }, onError: (e: any) => toast.error(e.message),
+  });
+  const rep = row.report?.submittedAt ? row.report.hoursReported : null;
+  if (editing) {
+    return (
+      <Input autoFocus value={val} onChange={e => setVal(e.target.value)} className="w-20 text-right" inputMode="decimal"
+        onKeyDown={e => { if (e.key === "Enter") { if (val.trim() === "") setEditing(false); else save.mutate(val.trim()); } if (e.key === "Escape") setEditing(false); }}
+        onBlur={() => setEditing(false)} />
+    );
+  }
+  return (
+    <span className="group inline-flex items-center justify-end gap-1.5">
+      <button disabled={!canEdit} onClick={() => { setVal(rep != null ? String(rep) : ""); setEditing(true); }}
+        className="inline-flex items-center gap-1 rounded px-1 hover:bg-white disabled:cursor-default"
+        title={canEdit ? (rep != null ? t("Виправити години рапорту за тиждень (зміни по днях і фото лишаються)") : t("Вписати години рапорту за тиждень")) : undefined}>
+        {canEdit && <Pencil className="invisible h-3 w-3 text-slate-400 group-hover:visible" />}
+        {rep != null ? <span className="font-semibold text-slate-700">{rep}</span> : <span className="text-slate-300">—</span>}
+      </button>
+      {rep != null && row.report && Math.abs(row.report.daysSum - rep) > 0.01 && <span className="text-[11px] text-amber-600" title={t("Сума по вибраних змінах відрізняється від вписаного тоталу")}>({row.report.daysSum})</span>}
+      {rep != null && row.report?.photoLink && <a href={row.report.photoLink} target="_blank" rel="noreferrer" className="text-sky-600 hover:text-sky-800" title={t("Фото рапорту")} onClick={e => e.stopPropagation()}><Camera className="h-3.5 w-3.5" /></a>}
+      {canEdit && rep != null && row.report?.photoLink && row.hasTelegram && <ReportRetakeButton workerId={row.workerId} factoryId={factoryId} weekStart={weekStart} title={`${row.name} · ${ddmm(weekStart)}–${ddmm(addDays(weekStart, 6))}`} />}
+    </span>
   );
 }
 

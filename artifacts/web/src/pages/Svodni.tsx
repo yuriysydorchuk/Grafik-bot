@@ -21,7 +21,7 @@ import { useMe } from "../lib/hooks";
 import { can } from "../lib/roles";
 import { useT } from "../lib/i18n";
 import { LEGAL_LABEL, LEGAL_BADGE, type LegalStatus } from "../lib/legalStatus";
-import { useOrderPref, useJsonPref, orderBy, useDragOrder, mergeVisibleOrder } from "../lib/prefs";
+import { useOrderPref, useJsonPref, usePrefWriter, orderBy, useDragOrder, mergeVisibleOrder } from "../lib/prefs";
 import { FIRM_TAB } from "../lib/colors";
 import { NatFlag } from "../lib/nationality";
 import { CHANGE_FIELD_LABEL, DIFF_KEY_LABEL, fmtVal, type ImpactItem } from "../components/ProfileChangeModal";
@@ -316,10 +316,18 @@ export default function Svodni() {
   const [clearsOpen, setClearsOpen] = useState(false);
   const [gratyfikantOpen, setGratyfikantOpen] = useState(false);
   // «Без порожніх колонок» — типово УВІМКНЕНО (показуємо лише стовпчики з даними)
-  const [hideEmptyCols, setHideEmptyCols] = useState(() => localStorage.getItem("svodni.hideEmptyCols") !== "0");
-  const [hideKsieg, setHideKsieg] = useState(() => localStorage.getItem("svodni.hideKsieg") === "1");
-  const toggleEmptyCols = () => setHideEmptyCols(v => { localStorage.setItem("svodni.hideEmptyCols", v ? "0" : "1"); return !v; });
-  const toggleKsieg = () => setHideKsieg(v => { localStorage.setItem("svodni.hideKsieg", v ? "0" : "1"); return !v; });
+  // Обидва тумблери живуть у admins.web_prefs (зголошення #34, 05.11.2026): раніше — у localStorage,
+  // тож на іншому пристрої/браузері скидались. Поки на сервері значення немає — старе з localStorage.
+  const writePref = usePrefWriter();
+  const [legacyToggles] = useState(() => {
+    try { return { empty: localStorage.getItem("svodni.hideEmptyCols") !== "0", ksieg: localStorage.getItem("svodni.hideKsieg") === "1" }; }
+    catch { return { empty: true, ksieg: false }; }
+  });
+  const prefBool = (key: string, fallback: boolean) => { const v = me?.prefs?.[key]; return typeof v === "boolean" ? v : fallback; };
+  const hideEmptyCols = prefBool("svodni.hideEmptyCols", legacyToggles.empty);
+  const hideKsieg = prefBool("svodni.hideKsieg", legacyToggles.ksieg);
+  const toggleEmptyCols = () => writePref("svodni.hideEmptyCols", !hideEmptyCols);
+  const toggleKsieg = () => writePref("svodni.hideKsieg", !hideKsieg);
   // видимість колонок: свій набір на кожну пару (місто, фабрика), БЕЗ місяця —
   // налаштована один раз, діє з місяця в місяць; живе в admins.web_prefs
   // (їде за користувачем між браузерами), інші користувачі мають власні
@@ -407,11 +415,51 @@ export default function Svodni() {
     try { return new Set(JSON.parse(localStorage.getItem(`svodni.${kind}.${effMonth}.${effCity}.${effFactory}`) ?? "[]")); }
     catch { return new Set(); }
   };
-  const hiddenCols = useMemo<Set<string>>(() => facColSets ? new Set(facColSets.hidden) : readLegacy("hiddenCols"), [facColSets, effMonth, effCity, effFactory]); // eslint-disable-line react-hooks/exhaustive-deps
-  const shownCols = useMemo<Set<string>>(() => facColSets ? new Set(facColSets.shown) : readLegacy("shownCols"), [facColSets, effMonth, effCity, effFactory]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Вкладка без власного набору (нова фабрика, фабрика, якої користувач ще не налаштовував) бере
+  // типовий (зголошення #34: директор налаштував те саме на 9 вкладках, а нові знову показували все):
+  // останній збережений у цьому місті → те, що сховано в більшості вже налаштованих вкладок міста
+  // (щоб запрацювало одразу, без жодного нового збереження) → останній збережений будь-де.
+  const cityDefaultKey = `svodni.colsDefault.${effCity}`;
+  const inheritedSets = useMemo<ColSets>(() => {
+    const prefs = me?.prefs ?? {};
+    const asSet = (v: unknown): ColSets => v && typeof v === "object" && Array.isArray((v as any).hidden)
+      ? { hidden: (v as any).hidden as string[], shown: Array.isArray((v as any).shown) ? (v as any).shown as string[] : [] } : null;
+    const own = asSet(prefs[cityDefaultKey]);
+    if (own) return own;
+    const prefix = `svodni.cols.${effCity}.`;
+    const saved = Object.entries(prefs).filter(([k]) => k.startsWith(prefix)).map(([, v]) => asSet(v)).filter((x): x is NonNullable<ColSets> => !!x);
+    if (saved.length) {
+      const major = (pick: (x: NonNullable<ColSets>) => string[]) => {
+        const n = new Map<string, number>();
+        for (const x of saved) for (const k of new Set(pick(x))) n.set(k, (n.get(k) ?? 0) + 1);
+        return [...n].filter(([, c]) => c * 2 > saved.length).map(([k]) => k);
+      };
+      return { hidden: major(x => x.hidden), shown: major(x => x.shown) };
+    }
+    return asSet(prefs["svodni.colsDefault"]);
+  }, [me?.prefs, effCity, cityDefaultKey]);
+  const effColSets = facColSets ?? inheritedSets;
+  const colSetsInherited = !facColSets && !!inheritedSets;
+  const hiddenCols = useMemo<Set<string>>(() => effColSets ? new Set(effColSets.hidden) : readLegacy("hiddenCols"), [effColSets, effMonth, effCity, effFactory]); // eslint-disable-line react-hooks/exhaustive-deps
+  const shownCols = useMemo<Set<string>>(() => effColSets ? new Set(effColSets.shown) : readLegacy("shownCols"), [effColSets, effMonth, effCity, effFactory]); // eslint-disable-line react-hooks/exhaustive-deps
   const writeSets = (hidden: Set<string>, shown: Set<string>) => {
     if (!effCity || !effFactory) return;
-    saveFacColSets({ hidden: [...hidden], shown: [...shown] });
+    const set = { hidden: [...hidden], shown: [...shown] };
+    saveFacColSets(set);
+    writePref(cityDefaultKey, set);
+    writePref("svodni.colsDefault", set);
+  };
+  // «Як тут — на всі вкладки міста»: поточний набір стає набором кожної вкладки міста й типовим для нових
+  const applyColsToCity = () => {
+    if (!effCity || !factories.length) return;
+    const set = { hidden: [...hiddenCols], shown: [...shownCols] };
+    // вкладки цього місяця ∪ вкладки міста, які мають власний набір з інших місяців (набори спільні для всіх
+    // місяців — інакше фабрика без рядків цього місяця лишилась би зі старим набором; ревʼю codex)
+    const prefix = `svodni.cols.${effCity}.`;
+    const keys = new Set([...factories.map(f => prefix + f), ...Object.keys(me?.prefs ?? {}).filter(k => k.startsWith(prefix))]);
+    for (const k of keys) writePref(k, set);
+    writePref(cityDefaultKey, set);
+    toast.success(t("Набір колонок застосовано до вкладок міста: {n}", { n: keys.size }));
   };
   // пошук по імені + фільтр форми легалізації (застосовуються до рядків міста)
   const matchesFilters = useMemo(() => {
@@ -572,6 +620,7 @@ export default function Svodni() {
   // стани чіпів панелі «Колонки»: жовтий = схована тумблером (без винятку)
   const emptyHiddenCol = (k: string) => emptyByToggle(k) && !shownCols.has(k);
   const ksiegHiddenCol = (k: string) => ksiegByToggle(k) && !shownCols.has(k);
+  const hiddenCount = allColumns.filter(([k]) => hiddenCols.has(k)).length; // успадкований набір може містити колонки інших вкладок
   const autoHiddenCount = allColumns.filter(([k]) => !hiddenCols.has(k) && (emptyHiddenCol(k) || ksiegHiddenCol(k))).length;
   const showAllCols = () => {
     writeSets(new Set(), new Set());
@@ -647,9 +696,9 @@ export default function Svodni() {
           <button onClick={() => setShowCols(v => !v)}
             className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium transition ${showCols ? "bg-slate-800 text-white" : "text-slate-600 hover:bg-slate-100"}`}>
             <Columns3 className="h-3.5 w-3.5" /> {t("Колонки")}
-            {hiddenCols.size > 0 && (
+            {hiddenCount > 0 && (
               <span className="rounded-full bg-rose-100 px-1.5 text-[10px] font-semibold text-rose-700" title={t("Приховано колонок — клікни, щоб показати список")}>
-                −{hiddenCols.size}
+                −{hiddenCount}
               </span>
             )}
           </button>
@@ -728,6 +777,14 @@ export default function Svodni() {
               <span className="font-semibold uppercase tracking-wide text-slate-400">{t("Видимі колонки")}</span>
               <button className="text-red-600 hover:underline" onClick={showAllCols} title={t("Показати всі колонки — включно з порожніми та księgowe")}>{t("показати всі")}</button>
               {autoHiddenCount > 0 && <span className="text-slate-400">{t("сховано тумблерами: {n}", { n: autoHiddenCount })}</span>}
+              {colSetsInherited && <span className="text-slate-400" title={t("Цю вкладку ви ще не налаштовували — показано набір з інших вкладок міста. Зміна тут збережеться для цієї вкладки й стане типовою для нових.")}>{t("набір як в інших вкладках")}</span>}
+              {factories.length > 1 && (
+                <button className="ml-auto text-slate-500 hover:text-red-600 hover:underline"
+                  title={t("Зробити видимість колонок такою самою на всіх вкладках фабрик цього міста (і для нових вкладок)")}
+                  onClick={() => { if (window.confirm(t("Застосувати цей набір колонок до всіх вкладок міста {city} ({n})? Власні набори інших вкладок буде замінено.", { city: t(effCity), n: factories.length }))) applyColsToCity(); }}>
+                  {t("застосувати до всіх вкладок міста")}
+                </button>
+              )}
             </div>
             <div className="flex flex-wrap gap-1.5">
               {allColumns.map(([k, hRaw]) => {

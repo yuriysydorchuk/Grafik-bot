@@ -579,6 +579,9 @@ export const scheduleEntriesTable = pgTable("schedule_entries", {
   absenceDeductedMonth: text("absence_deducted_month"), // YYYY-MM, NULL = не перенесено
   absenceDeductedAt: date("absence_deducted_at"),
   absenceDeductedAmount: real("absence_deducted_amount"),
+  // Внутрішня нотатка офісу до дня пропуску (зголошення #29, 05.11.2026): «не приймати запізніле
+  // виправдання» тощо. Працівник її не бачить; видно в графіку, на /absences і при спробі виправдати.
+  absenceOfficeNote: text("absence_office_note"),
   pickedUpBy: integer("picked_up_by").references(() => driversTable.id), // driver who boarded this worker
   hoursOverride: real("hours_override"), // manual hours for this shift (overrides computed shift duration)
   sentAt: timestamp("sent_at"), // when this entry was sent to the worker — they only see sent entries

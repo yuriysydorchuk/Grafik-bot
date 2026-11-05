@@ -4,11 +4,11 @@
 // Гейт — editData (як решта /hours); скоуп-адмін — SCOPE_RULES (фабрика в query/тілі,
 // лог — по фабриці рядка). Місячні таблиці перераховує services/weeklyHours.ts.
 import { Router, type IRouter } from "express";
-import { db, factoriesTable, factoryWeekHoursTable } from "@workspace/db";
+import { db, factoriesTable, factoryWeekHoursTable, weeklyReportsTable } from "@workspace/db";
 import { and, eq } from "drizzle-orm";
 import { authRequired, requireCap } from "../lib/auth";
 import {
-  buildWeekRows, sendWeeklyRequests, upsertFactoryWeekHours, deleteFactoryWeekHours, syncWeek, clearFactoryWeekHours, sendWeekAckRequests,
+  buildWeekRows, sendWeeklyRequests, upsertFactoryWeekHours, deleteFactoryWeekHours, syncWeek, clearFactoryWeekHours, sendWeekAckRequests, ensureWeeklyReport,
 } from "../services/weeklyHours";
 import { officeSetLog, getLog } from "../services/shiftLogs";
 import { weeksOverlappingMonth, weekLabel, weekDates, round2, dayValueTotal } from "../lib/weekMath";
@@ -80,6 +80,34 @@ router.post("/hours/weeks/factory", async (req, res) => {
   const hours = Number(String(req.body.hours).replace(",", "."));
   if (!Number.isFinite(hours) || hours < 0 || hours > 168) return fail(res, 400, "Години 0–168");
   await upsertFactoryWeekHours(workerId, factoryId, weekStart, round2(hours), "manual", null);
+  res.json({ ok: true, hours: round2(hours) });
+});
+
+// Тотал рапорту тижня вручну (зголошення #31, 05.11.2026): працівник вписав 22 замість 22,5 — офіс
+// виправляє число на вкладці тижня, як у місячному обліку (POST /hours/report). Міняється ЛИШЕ тотал:
+// зміни по днях і фото працівника лишаються (розбіжність «тотал ≠ сума по змінах» вкладка показує сама);
+// людині без рапорту число вписується як поданий рапорт без фото. Похідний місячний рядок — syncWeek.
+router.post("/hours/weeks/report", async (req, res) => {
+  const factoryId = Number(req.body?.factoryId);
+  const workerId = Number(req.body?.workerId);
+  const weekStart = req.body?.weekStart;
+  if (!factoryId || !workerId || !isWeek(weekStart)) return fail(res, 400, "factoryId, workerId та weekStart обовʼязкові");
+  const raw = req.body?.hours;
+  const hours = raw == null || raw === "" ? NaN : Number(String(raw).replace(",", "."));
+  if (!Number.isFinite(hours) || hours < 0 || hours > 168) return fail(res, 400, "Години 0–168");
+  // лише тижнева фабрика: на місячній тижневий рядок через syncWeek затер би справжній місячний рапорт (ревʼю codex)
+  const [fac] = await db.select({ weeklyHours: factoriesTable.weeklyHours }).from(factoriesTable).where(eq(factoriesTable.id, factoryId));
+  if (!fac) return fail(res, 404, "Фабрику не знайдено");
+  if (!fac.weeklyHours) return fail(res, 400, "Фабрика з місячним обліком — години рапорту правляться на вкладці місяця");
+  const rep = await ensureWeeklyReport(workerId, factoryId, weekStart);
+  const changed = !rep.submittedAt || rep.hoursReported == null || Math.abs(rep.hoursReported - hours) > 0.005;
+  await db.update(weeklyReportsTable)
+    .set({ hoursReported: round2(hours), submittedAt: rep.submittedAt ?? new Date(), updatedAt: new Date() })
+    .where(eq(weeklyReportsTable.id, rep.id));
+  // «все ок» стосувалось старої пари чисел — нова розбіжність не має виглядати вже перевіреною (ревʼю codex)
+  if (changed) await db.update(factoryWeekHoursTable).set({ confirmed: false, updatedAt: new Date() })
+    .where(and(eq(factoryWeekHoursTable.factoryId, factoryId), eq(factoryWeekHoursTable.workerId, workerId), eq(factoryWeekHoursTable.weekStart, weekStart), eq(factoryWeekHoursTable.confirmed, true)));
+  await syncWeek(workerId, factoryId, weekStart);
   res.json({ ok: true, hours: round2(hours) });
 });
 

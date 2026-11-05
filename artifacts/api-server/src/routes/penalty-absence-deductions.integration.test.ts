@@ -137,6 +137,9 @@ test("пропуски → Kara: сума ефективних штрафів п
 
   // перенесений пропуск не виправдовується і штраф не правиться
   assert.equal((await request(app).patch(`/api/absences/${e1!.id}`).set("Cookie", cookie).set(H).send({ justified: true })).status, 409);
+  // …а нотатку офісу до нього лишити можна (грошей не чіпає); разом із виправданням — так само 409
+  assert.equal((await request(app).patch(`/api/absences/${e1!.id}`).set("Cookie", cookie).set(H).send({ officeNote: "довідку приніс після перенесення" })).status, 200);
+  assert.equal((await request(app).patch(`/api/absences/${e1!.id}`).set("Cookie", cookie).set(H).send({ officeNote: "x", justified: true })).status, 409);
 
   // ↩ відміна e2: віднімається зафіксовані 50
   const undo = await request(app).post("/api/svodni/undo-absence-deduction").set("Cookie", cookie).set(H).send({ entryId: e2!.id });

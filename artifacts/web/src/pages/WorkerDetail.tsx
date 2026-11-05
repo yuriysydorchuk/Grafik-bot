@@ -4919,7 +4919,7 @@ function WorkerAbsences({ workerId }: { workerId: number }) {
   const t = useT();
   const { data } = useQuery<{
     total: number; justified: number; penaltyTotal: number;
-    absences: { entryId: number; factory: string | null; date: string; shift: string; reason: string | null; explainedAt?: string | null; attachments?: { id: number; fileName: string | null; fileMime: string | null }[]; excused: boolean; justified: boolean; penalty: number; deductedMonth: string | null; deductedAmount: number | null }[];
+    absences: { entryId: number; factory: string | null; date: string; shift: string; reason: string | null; explainedAt?: string | null; attachments?: { id: number; fileName: string | null; fileMime: string | null }[]; excused: boolean; justified: boolean; penalty: number; deductedMonth: string | null; deductedAmount: number | null; officeNote?: string | null }[];
   }>({ queryKey: ["worker-absences", workerId], queryFn: () => get(`/workers/${workerId}/absences`) });
   const rows = data?.absences ?? [];
   return (
@@ -4944,6 +4944,7 @@ function WorkerAbsences({ workerId }: { workerId: number }) {
                       : <Badge color="rose">{t("не вийшов")}</Badge>}
                     {a.reason && <span className="ml-1.5 text-xs text-slate-400" title={a.explainedAt ? `${a.reason} (${t("пояснено")} ${new Date(a.explainedAt).toLocaleDateString("uk-UA")})` : a.reason}>{a.reason.length > 24 ? a.reason.slice(0, 24) + "…" : a.reason}{a.explainedAt && <span className="ml-1 text-slate-300">({new Date(a.explainedAt).toLocaleDateString("uk-UA", { day: "2-digit", month: "2-digit" })})</span>}</span>}
                     {!!a.attachments?.length && <span className="ml-1"><AbsenceFiles files={a.attachments} compact /></span>}
+                    {a.officeNote && <span className="ml-1.5 text-xs text-amber-700" title={`${t("Нотатка офісу")}: ${a.officeNote}`}>📌</span>}
                   </td>
                   <td className="px-3 py-1.5 text-right tabular-nums">
                     {a.penalty > 0 ? <span className="font-medium text-rose-600">−{a.penalty} zł</span> : <span className="text-slate-300">—</span>}

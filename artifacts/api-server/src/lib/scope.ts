@@ -251,12 +251,12 @@ const SCOPE_RULES: Rule[] = [
   // Без factoryId ці дії йдуть по ВСІХ фабриках — для скоуп-адміна фабрика обовʼязкова
   R("GET", /^\/(?:schedule|schedule\/excel|orders|hours\/factory-codes|hours\/day-compare|hours\/report-excel|hours\/weeks)$/, { kind: "queryFactory" }),
   // тижневий облік (26.10.2026, routes/hoursWeekly.ts): фабрика у тілі; відмітка — по фабриці рядка
-  R("POST", /^\/hours\/weeks\/(?:remind|factory|confirm|factory-apply|clear|notify)$/, { kind: "bodyFactory" }),
+  R("POST", /^\/hours\/weeks\/(?:remind|factory|report|confirm|factory-apply|clear|notify)$/, { kind: "bodyFactory" }),
   R("PATCH", /^\/hours\/shift-logs\/(\d+)$/, { kind: "lookup", table: "shiftLog" }),
   R("DELETE", /^\/schedule\/shift-override$/, { kind: "queryFactory" }),
   R("POST", /^\/schedule\/(?:generate|approve|entry|shift-cancel|shift-restore|copy-day|clear|shift-override|email|notify)$/, { kind: "bodyFactory" }),
   R("PUT", /^\/orders$/, { kind: "bodyFactory" }),
-  R("POST", /^\/hours\/(?:factory|factory-clear|factory-notify|factory-confirm|factory-apply|factory-codes-parse|factory-codes-apply|discrepancy-email|statement-email)$/, { kind: "bodyFactory" }),
+  R("POST", /^\/hours\/(?:factory|factory-clear|factory-notify|factory-confirm|factory-apply|factory-codes-parse|factory-codes-apply|discrepancy-email|statement-email|report-retake)$/, { kind: "bodyFactory" }),
   R("POST", /^\/workers$/, { kind: "bodyFactory" }),
   // workerId/масиви id звіряє гейт тіла; фабрику-фолбек, multipart і «всім» — хендлери
   R("POST", /^\/hours\/(?:report|note|factory-parse|exclusions|exclusions-remove|last-activity|report-remind|fire-review)$/, { kind: "free" }),

@@ -230,6 +230,70 @@ test("місячні рядки виводяться з тижнів по дат
   assert.equal(fh.length, 0);
 });
 
+test("тотал рапорту тижня вручну (#31): число міняється, дні й фото лишаються, місяць перераховано; без рапорту — вписується як поданий", opts, async () => {
+  const { factoryId, workerId } = await seedWeeklyFactory("06:00");
+  const rep = await ensureWeeklyReport(workerId, factoryId, "2026-10-19");
+  await saveWeeklyReport(rep.id, { days: { "2026-10-19": { shift: "1", hours: 8 }, "2026-10-20": { shift: "1", hours: 8 } }, hoursReported: 22, photoLink: "https://drive.google.com/file/d/y/view" });
+  let res = await request(app).post("/api/hours/weeks/report").set("Cookie", owner).set(H).send({ factoryId, workerId, weekStart: "2026-10-19", hours: "22,5" });
+  assert.equal(res.status, 200); assert.equal(res.body.hours, 22.5);
+  let { rows } = await buildWeekRows(factoryId, "2026-10-19");
+  assert.deepEqual([rows[0]!.report!.hoursReported, rows[0]!.report!.daysSum, rows[0]!.report!.photoLink], [22.5, 16, "https://drive.google.com/file/d/y/view"]);
+  const oct = await db.select().from(monthlyReportsTable).where(and(eq(monthlyReportsTable.workerId, workerId), eq(monthlyReportsTable.month, "2026-10")));
+  assert.equal(oct[0]!.hoursReported, 22.5);
+  // тиждень без рапорту: число офісу = поданий рапорт без фото
+  res = await request(app).post("/api/hours/weeks/report").set("Cookie", owner).set(H).send({ factoryId, workerId, weekStart: "2026-10-12", hours: 40 });
+  assert.equal(res.status, 200);
+  ({ rows } = await buildWeekRows(factoryId, "2026-10-12"));
+  assert.ok(rows[0]!.report!.submittedAt); assert.equal(rows[0]!.report!.hoursReported, 40);
+  // «все ок» по тижню стосувалось старої пари чисел — зміна тоталу рапорту його скидає; те саме число — ні
+  await request(app).post("/api/hours/weeks/factory").set("Cookie", owner).set(H).send({ factoryId, workerId, weekStart: "2026-10-19", hours: "24" });
+  await request(app).post("/api/hours/weeks/confirm").set("Cookie", owner).set(H).send({ factoryId, workerId, weekStart: "2026-10-19", confirmed: true });
+  await request(app).post("/api/hours/weeks/report").set("Cookie", owner).set(H).send({ factoryId, workerId, weekStart: "2026-10-19", hours: 22.5 });
+  ({ rows } = await buildWeekRows(factoryId, "2026-10-19"));
+  assert.equal(rows[0]!.factory!.confirmed, true, "те саме число — підтвердження лишається");
+  await request(app).post("/api/hours/weeks/report").set("Cookie", owner).set(H).send({ factoryId, workerId, weekStart: "2026-10-19", hours: 23 });
+  ({ rows } = await buildWeekRows(factoryId, "2026-10-19"));
+  assert.equal(rows[0]!.factory!.confirmed, false, "новий тотал рапорту скидає «все ок»");
+  await request(app).post("/api/hours/weeks/report").set("Cookie", owner).set(H).send({ factoryId, workerId, weekStart: "2026-10-19", hours: 22.5 });
+  // фабрика з місячним обліком: тижневий рядок затер би її місячний рапорт — 400, місячний рапорт цілий
+  const [mf] = await db.insert(factoriesTable).values({ name: "Miesieczna" }).returning({ id: factoriesTable.id });
+  await db.insert(monthlyReportsTable).values({ workerId, month: "2026-10", factoryId: mf!.id, hoursReported: 168 });
+  res = await request(app).post("/api/hours/weeks/report").set("Cookie", owner).set(H).send({ factoryId: mf!.id, workerId, weekStart: "2026-10-19", hours: 40 });
+  assert.equal(res.status, 400);
+  const [mrep] = await db.select().from(monthlyReportsTable).where(and(eq(monthlyReportsTable.workerId, workerId), eq(monthlyReportsTable.factoryId, mf!.id)));
+  assert.equal(mrep!.hoursReported, 168);
+  // порожнє й сміття — 400, рапорт не чіпається
+  for (const hours of ["", null, "abc", 200]) {
+    res = await request(app).post("/api/hours/weeks/report").set("Cookie", owner).set(H).send({ factoryId, workerId, weekStart: "2026-10-19", hours });
+    assert.equal(res.status, 400);
+  }
+  ({ rows } = await buildWeekRows(factoryId, "2026-10-19"));
+  assert.equal(rows[0]!.report!.hoursReported, 22.5);
+});
+
+test("«попросити перезняти рапорт» (#32): прохання в бот з причиною й кнопкою рапорту; без рапорту — 400", opts, async () => {
+  const { factoryId, workerId } = await seedWeeklyFactory("06:00");
+  const body = { workerId, factoryId, weekStart: "2026-10-19", reason: "Видно не весь аркуш" };
+  // рапорту ще немає — перезнімати нічого
+  let res = await request(app).post("/api/hours/report-retake").set("Cookie", owner).set(H).send(body);
+  assert.equal(res.status, 400); assert.equal(sent.length, 0);
+  const rep = await ensureWeeklyReport(workerId, factoryId, "2026-10-19");
+  await saveWeeklyReport(rep.id, { days: { "2026-10-19": { shift: "1", hours: 8 } }, hoursReported: 8, photoLink: "https://drive.google.com/file/d/z/view" });
+  res = await request(app).post("/api/hours/report-retake").set("Cookie", owner).set(H).send(body);
+  assert.equal(res.status, 200);
+  assert.match(sentText(), /перезняти рапорт[\s\S]*19\.10–25\.10[\s\S]*Видно не весь аркуш/);
+  assert.deepEqual(sent.at(-1)!.extra.reply_markup.inline_keyboard.flat().map((b: any) => b.callback_data), [`wkr:go:${rep.id}`]);
+  // кнопка відкриває той самий рапорт тижня; старий рапорт лишається, доки не здано новий
+  resetSent();
+  await pressButton(TID, `wkr:go:${rep.id}`);
+  assert.ok(sent.length > 0);
+  const [cur] = await db.select().from(weeklyReportsTable).where(eq(weeklyReportsTable.id, rep.id));
+  assert.equal(cur!.hoursReported, 8); assert.ok(cur!.submittedAt);
+  // місячний запит до тижневої фабрики — з вкладки тижня; сміття в параметрах — 400
+  assert.equal((await request(app).post("/api/hours/report-retake").set("Cookie", owner).set(H).send({ workerId, factoryId, month: "2026-10" })).status, 400);
+  assert.equal((await request(app).post("/api/hours/report-retake").set("Cookie", owner).set(H).send({ workerId, factoryId, weekStart: "2026-10-20" })).status, 400);
+});
+
 test("GET /hours/weeks: тижні місяця з рядками, імпорт тижня, «все ок» скидається при зміні годин", opts, async () => {
   const { factoryId, workerId } = await seedWeeklyFactory("06:00");
   let res = await request(app).post("/api/hours/weeks/factory-apply").set("Cookie", owner).set(H)

@@ -11,6 +11,7 @@ import { HoursWeekView, weeksOfMonth, weeksKey } from "../components/HoursWeekVi
 import { RecipientsPicker } from "../components/RecipientsPicker";
 import { useMe } from "../lib/hooks";
 import { can } from "../lib/roles";
+import { ReportRetakeButton } from "../components/ReportRetake";
 import { useT, useLang } from "../lib/i18n";
 import { useOrderPref, orderBy, useDragOrder, mergeVisibleOrder } from "../lib/prefs";
 import { FIRM_TAB } from "../lib/colors";
@@ -523,7 +524,7 @@ export default function Hours() {
               },
               report: {
                 th: () => colTh("report", "border-l-2 border-slate-300 bg-sky-100/70 px-4 py-2.5 text-right text-sky-800", t("Години з рапорту")),
-                td: w => <td key="report" className={`border-l-2 border-slate-200 px-4 py-1.5 text-right ${DIFF_CELL[diffState(w)]}`} onClick={e => e.stopPropagation()}><ReportHoursCell w={w} month={month} canEdit={canEdit} /></td>,
+                td: w => <td key="report" className={`border-l-2 border-slate-200 px-4 py-1.5 text-right ${DIFF_CELL[diffState(w)]}`} onClick={e => e.stopPropagation()}><ReportHoursCell w={w} month={month} canEdit={canEdit} retake={!weeklyIds.has(w.factoryId ?? -1)} /></td>,
                 foot: () => <td key="report" className="px-4 py-2.5 text-right text-slate-600">{round(g.rows.reduce((s, w) => s + (w.reportHours ?? 0), 0))} {t("год")}</td>,
               },
               factory: {
@@ -2137,7 +2138,7 @@ function NoteCell({ w, month, canEdit }: { w: HourRow; month: string; canEdit: b
 
 // Report-hours cell: read-only for non-editors; click-to-edit inline for admins so they
 // can fill hours manually (e.g. for workers who submitted before this feature existed).
-function ReportHoursCell({ w, month, canEdit }: { w: HourRow; month: string; canEdit: boolean }) {
+function ReportHoursCell({ w, month, canEdit, retake }: { w: HourRow; month: string; canEdit: boolean; retake?: boolean }) {
   const t = useT();
   const qc = useQueryClient();
   const [editing, setEditing] = useState(false);
@@ -2169,6 +2170,8 @@ function ReportHoursCell({ w, month, canEdit }: { w: HourRow; month: string; can
     <span className="inline-flex items-center justify-end gap-1.5">
       {linked}
       <button onClick={() => { setVal(w.reportHours != null ? String(w.reportHours) : ""); setEditing(true); }} className="rounded-md p-0.5 text-slate-300 hover:text-red-600" title={t("Вписати години")}><Pencil className="h-3.5 w-3.5" /></button>
+      {/* фото неповне → повернути на перезйомку (#32); тижнева фабрика — з вкладки тижня */}
+      {retake && w.reportSubmitted && w.reportLink && w.factoryId != null && <ReportRetakeButton workerId={w.workerId} factoryId={w.factoryId} month={month} title={`${w.name} · ${month}`} />}
     </span>
   );
 }

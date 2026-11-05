@@ -1553,6 +1553,7 @@ router.get("/workers/:id/absences", WORKERS_RO, async (req, res) => {
       reason: scheduleEntriesTable.absenceReason, explainedAt: scheduleEntriesTable.absenceExplainedAt,
       excusedFlag: scheduleEntriesTable.absenceExcused, penaltyOverride: scheduleEntriesTable.absencePenalty,
       deductedMonth: scheduleEntriesTable.absenceDeductedMonth, deductedAmount: scheduleEntriesTable.absenceDeductedAmount,
+      officeNote: scheduleEntriesTable.absenceOfficeNote,
       weekStart: scheduleWeeksTable.weekStart,
     })
     .from(scheduleEntriesTable)
@@ -1566,7 +1567,7 @@ router.get("/workers/:id/absences", WORKERS_RO, async (req, res) => {
       entryId: r.entryId, factory: r.factory, date: entryDateStr(String(r.weekStart), r.day), shift: r.shift,
       reason: r.reason, explainedAt: r.explainedAt, excused: !!r.reason, justified: !!r.excusedFlag,
       penalty: absencePenaltyOf({ absenceExcused: r.excusedFlag, absencePenalty: r.penaltyOverride }),
-      deductedMonth: r.deductedMonth, deductedAmount: r.deductedAmount,
+      deductedMonth: r.deductedMonth, deductedAmount: r.deductedAmount, officeNote: r.officeNote,
     }))
     .sort((a, b) => b.date.localeCompare(a.date))
     .slice(0, 60);
@@ -3062,6 +3063,7 @@ router.get("/schedule", async (req, res) => {
       positionId: effectivePositionSql(workersTable.id, scheduleEntriesTable.factoryId, workersTable.positionId), gender: workersTable.gender, // посада на фабриці запису (#12)
       factoryId: scheduleEntriesTable.factoryId, factoryName: factoriesTable.name,
       pickedUpByName: driversTable.name,
+      officeNote: scheduleEntriesTable.absenceOfficeNote, // нотатка офісу до пропуску (#29)
     })
     .from(scheduleEntriesTable)
     .leftJoin(workersTable, eq(scheduleEntriesTable.workerId, workersTable.id))
@@ -4444,6 +4446,56 @@ router.post("/hours/report", RW, async (req, res) => {
   ok(res, { ok: true, hours: h });
 });
 
+// «Попросити перезняти рапорт» (зголошення #32, 05.11.2026): працівник прислав шматок аркуша замість
+// цілого. Перевірити «фото повне» кодом не можна — офіс дивиться фото й одним кліком повертає на
+// перезйомку: людині в бот іде прохання з причиною й кнопкою, що відкриває рапорт саме за цей
+// місяць×фабрику (repi:) або тиждень (wkr:go:). Наявний рапорт лишається, доки людина не здасть новий.
+// body: { workerId, factoryId, month | weekStart, reason? }
+router.post("/hours/report-retake", RW, async (req, res) => {
+  const workerId = Number(req.body?.workerId), factoryId = Number(req.body?.factoryId);
+  const month = req.body?.month == null ? null : String(req.body.month);
+  const weekStart = req.body?.weekStart == null ? null : String(req.body.weekStart);
+  const reason = String(req.body?.reason ?? "").trim();
+  if (!workerId || !factoryId) return fail(res, 400, "workerId та factoryId обовʼязкові");
+  if (reason.length > 500) return fail(res, 400, "Причина до 500 символів");
+  const isMonday = !!weekStart && /^\d{4}-\d{2}-\d{2}$/.test(weekStart) && new Date(weekStart + "T00:00:00").getDay() === 1;
+  if (weekStart ? !isMonday : !(month && /^\d{4}-\d{2}$/.test(month))) return fail(res, 400, "Потрібен month=YYYY-MM або weekStart (понеділок)");
+  const [w] = await db.select({ tid: workersTable.telegramId, lang: workersTable.language }).from(workersTable).where(eq(workersTable.id, workerId));
+  const [fac] = await db.select({ name: factoriesTable.name, weeklyHours: factoriesTable.weeklyHours }).from(factoriesTable).where(eq(factoriesTable.id, factoryId));
+  if (!w || !fac) return fail(res, 404, "Працівника або фабрику не знайдено");
+  if (!w.tid) return fail(res, 400, "Працівник не підключений до бота");
+  const { t, asLang, DATE_LOCALE } = await import("../bot/i18n");
+  const { mdSafe } = await import("../bot/display");
+  const lang = asLang(w.lang);
+  let period: string, callback: string;
+  if (weekStart) {
+    const { weekLabel } = await import("../lib/weekMath");
+    if (!fac.weeklyHours) return fail(res, 400, "Фабрика з місячним обліком — попросіть перезняти з вкладки місяця");
+    const [rep] = await db.select({ id: weeklyReportsTable.id, submittedAt: weeklyReportsTable.submittedAt }).from(weeklyReportsTable)
+      .where(and(eq(weeklyReportsTable.workerId, workerId), eq(weeklyReportsTable.factoryId, factoryId), eq(weeklyReportsTable.weekStart, weekStart)));
+    if (!rep?.submittedAt) return fail(res, 400, "Рапорту за цей тиждень ще немає — перезнімати нічого");
+    period = weekLabel(weekStart); callback = `wkr:go:${rep.id}`;
+  } else {
+    if (fac.weeklyHours) return fail(res, 400, "Фабрика з тижневим обліком — попросіть перезняти з вкладки тижня");
+    const [rep] = await db.select({ id: monthlyReportsTable.id }).from(monthlyReportsTable)
+      .where(and(eq(monthlyReportsTable.workerId, workerId), eq(monthlyReportsTable.month, month!), eq(monthlyReportsTable.factoryId, factoryId)));
+    if (!rep) return fail(res, 400, "Рапорту за цей місяць і фабрику ще немає — перезнімати нічого");
+    // бот приймає рапорт не старіший за 3 місяці (repi:) — старіший запит людина не змогла б виконати
+    const now = new Date(), oldest = new Date(now.getFullYear(), now.getMonth() - 3, 1);
+    const ym = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+    if (month! > ym(now) || month! < ym(oldest)) return fail(res, 400, "Рапорт можна перезняти лише за останні 3 місяці");
+    period = new Date(`${month}-01`).toLocaleDateString(DATE_LOCALE[lang], { month: "long", year: "numeric" });
+    callback = `repi:${month}:${factoryId}`;
+  }
+  try {
+    const { bot } = await import("../bot");
+    await bot.telegram.sendMessage(w.tid, t(lang, "report.retake", { period, factory: mdSafe(fac.name), reason: reason ? `\n\n💬 ${mdSafe(reason)}` : "" }), {
+      parse_mode: "Markdown", reply_markup: { inline_keyboard: [[{ text: t(lang, "report.retakeBtn"), callback_data: callback }]] },
+    });
+  } catch (e) { logger.warn({ err: e, workerId }, "report retake request failed"); return fail(res, 502, "Не вдалося надіслати в бот (працівник міг заблокувати бота)"); }
+  ok(res, { sent: true });
+});
+
 // Ручна замітка рядка обліку годин — вільний текст графіка/офісу до пари
 // (працівник, місяць, фабрика). Порожнє значення — видалити.
 router.post("/hours/note", RW, async (req, res) => {
@@ -5451,6 +5503,7 @@ router.get("/absences", RW, async (req, res) => {
       explainedAt: scheduleEntriesTable.absenceExplainedAt,
       excusedFlag: scheduleEntriesTable.absenceExcused, penaltyOverride: scheduleEntriesTable.absencePenalty,
       deductedMonth: scheduleEntriesTable.absenceDeductedMonth, deductedAmount: scheduleEntriesTable.absenceDeductedAmount,
+      officeNote: scheduleEntriesTable.absenceOfficeNote,
       weekStart: scheduleWeeksTable.weekStart,
     })
     .from(scheduleEntriesTable)
@@ -5470,6 +5523,7 @@ router.get("/absences", RW, async (req, res) => {
       penaltyOverride: r.penaltyOverride, // NULL = стандарт (для UI-редактора)
       deductedMonth: r.deductedMonth, // YYYY-MM сводної, куди перенесено штраф (NULL = ні)
       deductedAmount: r.deductedAmount,
+      officeNote: r.officeNote, // внутрішня нотатка офісу (#29) — працівник її не бачить
     }))
     .filter(a => a.date >= monthStart && a.date < monthEnd) // keep only days that fall inside the queried month
     .sort((a, b) => b.date.localeCompare(a.date) || (a.name ?? "").localeCompare(b.name ?? "", "uk"));
@@ -5517,8 +5571,11 @@ router.post("/absences/remind", RW, async (req, res) => {
   } catch (e: any) { fail(res, 400, e?.message ?? "Помилка"); }
 });
 
-// Виправдання пропуску / коригування штрафу. body: { justified?: boolean; penalty?: number|null }
+// Виправдання пропуску / коригування штрафу / нотатка офісу.
+// body: { justified?: boolean; penalty?: number|null; officeNote?: string|null }
 // penalty: null = повернути стандарт, 0 = анулювати, число = свій розмір (zł).
+// officeNote (#29): внутрішня примітка до дня пропуску, порожнє/null — прибрати; грошей не чіпає,
+// тож правиться й після перенесення штрафу в сводну.
 router.patch("/absences/:entryId", RW, async (req, res) => {
   const id = Number(req.params.entryId);
   if (!Number.isInteger(id)) return fail(res, 400, "Невірний id");
@@ -5526,10 +5583,15 @@ router.patch("/absences/:entryId", RW, async (req, res) => {
     .from(scheduleEntriesTable).where(eq(scheduleEntriesTable.id, id));
   if (!entry) return fail(res, 404, "Запис не знайдено");
   if (entry.status !== "absent") return fail(res, 400, "Запис не є пропуском");
-  // Штраф уже перенесено в Kara сводної — редагування розсинхронізувало б суми
-  if (entry.deductedMonth) return fail(res, 409, `Штраф перенесено у сводну ${entry.deductedMonth} — спершу відміни перенесення`);
   const body = req.body ?? {};
-  const patch: Partial<{ absenceExcused: boolean; absencePenalty: number | null }> = {};
+  const patch: Partial<{ absenceExcused: boolean; absencePenalty: number | null; absenceOfficeNote: string | null }> = {};
+  if ("officeNote" in body) {
+    const note = body.officeNote == null ? "" : String(body.officeNote).trim();
+    if (note.length > 1000) return fail(res, 400, "Нотатка до 1000 символів");
+    patch.absenceOfficeNote = note || null;
+  }
+  // Штраф уже перенесено в Kara сводної — редагування розсинхронізувало б суми
+  if (entry.deductedMonth && (typeof body.justified === "boolean" || "penalty" in body)) return fail(res, 409, `Штраф перенесено у сводну ${entry.deductedMonth} — спершу відміни перенесення`);
   if (typeof body.justified === "boolean") patch.absenceExcused = body.justified;
   if ("penalty" in body) {
     if (body.penalty === null) patch.absencePenalty = null;
@@ -5544,6 +5606,7 @@ router.patch("/absences/:entryId", RW, async (req, res) => {
   ok(res, {
     entryId: e!.id, justified: e!.absenceExcused, penaltyOverride: e!.absencePenalty,
     penalty: absencePenaltyOf({ absenceExcused: e!.absenceExcused, absencePenalty: e!.absencePenalty }),
+    officeNote: e!.absenceOfficeNote,
   });
 });
 

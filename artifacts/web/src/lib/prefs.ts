@@ -59,6 +59,16 @@ export function useJsonPref<T>(key: string, fallback: T): [T, (next: T) => void]
   return [value, save];
 }
 
+// Запис довільного ключа web_prefs (той самий оптимістичний механізм) — коли ключів багато або
+// вони обчислюються на льоту (набір колонок сводної «на всі вкладки міста»).
+export function usePrefWriter(): (key: string, value: unknown) => void {
+  const qc = useQueryClient();
+  return useCallback((key: string, value: unknown) => {
+    setPrefCache(qc, key, value);
+    postPref(qc, key, value);
+  }, [qc]);
+}
+
 // Відсортувати за збереженим порядком: відомі ключі — за своїм індексом,
 // нові/невідомі — в кінець у поточному (дефолтному) порядку.
 export function orderBy<T>(items: T[], keyOf: (x: T) => string, order: string[]): T[] {

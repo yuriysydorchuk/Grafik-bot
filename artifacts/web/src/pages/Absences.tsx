@@ -9,6 +9,7 @@ import { Card, Spinner, Select, Empty, Badge, Button, Modal } from "../component
 import { AbsenceFiles, type AbsenceFile } from "../components/AbsenceFiles";
 import { PageHeader } from "../components/Layout";
 import { useConfirm } from "../components/confirm";
+import { AbsenceNoteButton } from "../components/AbsenceNote";
 import { useMe } from "../lib/hooks";
 import { can } from "../lib/roles";
 import { useT, useLang } from "../lib/i18n";
@@ -31,6 +32,7 @@ interface Absence {
   penaltyOverride: number | null; // NULL = стандарт
   deductedMonth: string | null; // YYYY-MM сводної, куди перенесено штраф (NULL = ні)
   deductedAmount: number | null;
+  officeNote?: string | null;   // внутрішня нотатка офісу до цього дня (#29) — працівник не бачить
 }
 interface AbsenceMessage { id: number; direction: "office" | "worker"; kind: string; text: string; adminName: string | null; createdAt: string }
 interface AbsenceRequest {
@@ -369,7 +371,7 @@ export default function Absences() {
             </thead>
             <tbody className="divide-y divide-slate-100">
               {byWorker.filter(w => matchesQuery(sq, w.name, w.code)).map(w => (
-                <WorkerRows key={w.key} w={w} open={openWorker === w.key} canEdit={canEdit}
+                <WorkerRows key={w.key} w={w} open={openWorker === w.key} canEdit={canEdit} onReload={() => qc.invalidateQueries({ queryKey: ["absences", month] })}
                   defaultPenalty={data?.defaultPenalty ?? 200}
                   canSvodni={canSvodni} selectable={eligByWorker.has(w.key)} selected={sel.has(w.key)}
                   onSelToggle={() => toggleSel(w.key)} onUndo={(entryId) => undo.mutate(entryId)} undoing={undo.isPending}
@@ -421,6 +423,7 @@ export default function Absences() {
                     {a.reason || <span className="text-slate-300">{t("— без причини —")}</span>}
                     {a.reason && a.explainedAt && <span className="ml-1.5 text-xs text-slate-400" title={t("Дата внесення пояснення працівником")}>({t("пояснено")} {fmtExplained(a.explainedAt)})</span>}
                     {!!a.attachments?.length && <span className="ml-1.5"><AbsenceFiles files={a.attachments} /></span>}
+                    {a.officeNote && <div className="mt-0.5 text-xs text-amber-700" title={t("Нотатка офісу")}>📌 {a.officeNote}</div>}
                   </td>
                   <td className="px-4 py-2.5 text-right tabular-nums">
                     {a.justified || a.penalty === 0 ? <span className="text-slate-300">—</span> : (
@@ -466,7 +469,8 @@ export default function Absences() {
 
 // Рядок зведення по працівнику + розкриття його пропусків із діями
 // («виправдати», редагування/анулювання штрафу, відміна перенесення в сводну)
-function WorkerRows({ w, open, canEdit, defaultPenalty, canSvodni, selectable, selected, onSelToggle, onUndo, undoing, onToggle, onPatch, patching, onMessage }: {
+function WorkerRows({ w, open, canEdit, defaultPenalty, canSvodni, selectable, selected, onSelToggle, onUndo, undoing, onToggle, onPatch, patching, onMessage, onReload }: {
+  onReload: () => void;
   w: WorkerSum; open: boolean; canEdit: boolean; defaultPenalty: number;
   canSvodni: boolean; selectable: boolean; selected: boolean;
   onSelToggle: () => void; onUndo: (entryId: number) => void; undoing: boolean;
@@ -514,6 +518,9 @@ function WorkerRows({ w, open, canEdit, defaultPenalty, canSvodni, selectable, s
                     : <Badge color="rose">{t("Нез'явлення")}</Badge>}
                   {a.reason && <span className="text-slate-500">📝 {a.reason}{a.explainedAt && <span className="ml-1 text-xs text-slate-400">({t("пояснено")} {fmtExplained(a.explainedAt)})</span>}</span>}
                   <AbsenceFiles files={a.attachments} />
+                  {a.officeNote && <span className="max-w-md rounded-md bg-amber-50 px-1.5 py-0.5 text-xs text-amber-800" title={t("Нотатка офісу")}>📌 {a.officeNote}</span>}
+                  <AbsenceNoteButton entryId={a.entryId} note={a.officeNote} canEdit={canEdit} onSaved={onReload}
+                    title={`${w.name} · ${fmtDate(a.date)} · ${SHIFT_UK[a.shift]}`} />
                   {/* листування з працівником: остання репліка + лічильник; «Написати» відкриває модалку */}
                   {(a.messages?.length ?? 0) > 0 && (() => {
                     const last = a.messages![a.messages!.length - 1]!;
@@ -543,7 +550,16 @@ function WorkerRows({ w, open, canEdit, defaultPenalty, canSvodni, selectable, s
                       <>
                         {!a.justified && <PenaltyEditor a={a} canEdit={canEdit} defaultPenalty={defaultPenalty} onPatch={onPatch} patching={patching} />}
                         {canEdit && (
-                          <button onClick={() => onPatch({ entryId: a.entryId, justified: !a.justified })} disabled={patching}
+                          <button disabled={patching}
+                            onClick={async () => {
+                              // нотатка офісу на цьому дні — показати її, перш ніж виправдати (#29)
+                              if (!a.justified && a.officeNote && !(await confirm({
+                                title: t("Виправдати пропуск із нотаткою офісу?"),
+                                message: `${w.name} · ${fmtDate(a.date)}\n\n${t("Нотатка офісу")}: ${a.officeNote}`,
+                                confirmText: t("Все одно виправдати"), danger: true,
+                              }))) return;
+                              onPatch({ entryId: a.entryId, justified: !a.justified });
+                            }}
                             title={a.justified ? t("Пропуск знову рахуватиметься і матиме штраф") : t("Виправданий пропуск не рахується в кількість і не має штрафу")}
                             className={`rounded-md border px-2 py-1 text-xs font-medium disabled:opacity-50 ${a.justified
                               ? "border-slate-200 text-slate-500 hover:bg-slate-50"

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Link } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { AbsenceNoteButton } from "../components/AbsenceNote";
 import { Zap, CheckCircle2, RefreshCw, Download, Send, X, GripVertical, Users, Check, Pencil, Link2, Car, Mail, Ban, Copy, Eraser } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -582,6 +583,8 @@ export default function Schedule() {
                                       {present ? t("вийшов") : absent ? t("не вийшов") : t("не відмічено")}
                                     </span>
                                   )}
+                                  {absent && <AbsenceNoteButton entryId={e.id} note={e.officeNote} canEdit={editable} onSaved={reload}
+                                    title={`${e.workerName ?? ""} · ${dayDate(weekStart, DAYS.indexOf(day))} · ${SHIFT_UK[shift]}`} />}
                                 </div>
                               );
                             })}

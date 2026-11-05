@@ -327,6 +327,23 @@ test("GET /absences рахує штрафи (стандарт 200); PATCH пра
   assert.equal(res.body.penaltyTotal, 150);
 });
 
+test("нотатка офісу до пропуску (#29): зберігається, видна в /absences, /schedule і профілі, порожнє прибирає", opts, async () => {
+  const f = await mkFactory(), w = await mkWorker(f), wk = await mkApprovedWeek();
+  const e = await mkEntry(wk, w, f, "1", "absent");
+  let res = await request(app).patch(`/api/absences/${e}`).set("Cookie", cookie).set(H).send({ officeNote: "  не приймати виправдання заднім числом  " });
+  assert.equal(res.status, 200); assert.equal(res.body.officeNote, "не приймати виправдання заднім числом");
+  res = await request(app).get(`/api/absences?month=${MONTH}`).set("Cookie", cookie);
+  assert.equal(res.body.absences[0].officeNote, "не приймати виправдання заднім числом");
+  assert.equal(res.body.absences[0].penalty, 200, "нотатка не чіпає штраф і виправдання");
+  res = await request(app).get(`/api/schedule?weekStart=${WEEK}&factoryId=${f}`).set("Cookie", cookie);
+  assert.equal(res.body.entries.find((x: any) => x.id === e).officeNote, "не приймати виправдання заднім числом");
+  res = await request(app).get(`/api/workers/${w}/absences`).set("Cookie", cookie);
+  assert.equal(res.body.absences[0].officeNote, "не приймати виправдання заднім числом");
+  assert.equal((await request(app).patch(`/api/absences/${e}`).set("Cookie", cookie).set(H).send({ officeNote: "x".repeat(1001) })).status, 400);
+  res = await request(app).patch(`/api/absences/${e}`).set("Cookie", cookie).set(H).send({ officeNote: "" });
+  assert.equal(res.status, 200); assert.equal(res.body.officeNote, null);
+});
+
 test("PATCH /absences/:entryId відхиляє не-пропуск і невалідний штраф", opts, async () => {
   const f = await mkFactory(), w = await mkWorker(f), wk = await mkApprovedWeek();
   const scheduled = await mkEntry(wk, w, f, "1", "scheduled");

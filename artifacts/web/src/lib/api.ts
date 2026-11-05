@@ -301,6 +301,7 @@ export interface ScheduleEntry {
   workerId: number; workerName: string | null; workerCode: string | null;
   positionId?: number | null; gender?: Gender | null; selfTransport?: boolean;
   factoryId: number; factoryName: string | null; pickedUpByName?: string | null;
+  officeNote?: string | null; // внутрішня нотатка офісу до пропуску (#29)
 }
 export interface Dashboard {
   counts: { workers: number; workersLinked: number; drivers: number; driversLinked: number; factories: number };
