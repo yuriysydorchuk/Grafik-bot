@@ -36,6 +36,7 @@ import { loadCampaignParams } from "../services/referralCampaign";
 import { factoryShiftHours, factoryShifts, nowWarsaw, warsawDayName, warsawDateStr, reportMonthFor } from "../bot/time";
 import { loadWeekShiftOverrides, loadDateShiftOverrides, loadDatesShiftOverrides, overrideFor, shiftOverrideKey, shiftDurationHours, type ShiftOverrideMap } from "../services/shiftOverrides";
 import { hashPassword } from "../lib/auth";
+import { workerFileDownloadName, contentDisposition } from "../lib/downloadName";
 import { scopeGate, workerInScopeSql, factoryInScope, factoryInScopeSql, factoriesOutsideScope, type AdminScope } from "../lib/scope";
 import { calcPayroll, round2, DEFAULT_RATES, type FinanceRates } from "../lib/payroll";
 import { WORKER_DOCS_DIR, UPLOADS_ROOT, makeStoredName, deleteStoredFile, sniffDocMime, compressUploadImage } from "../lib/uploads";
@@ -1822,7 +1823,7 @@ router.post("/worker-documents/:id/file", DOCS_RW, uploadDoc.fields([{ name: "fi
 // Попередня версія файлу документа (attrs.previousFiles[i]) — ті самі права, що й на чинний файл
 router.get("/worker-documents/:id/file/prev/:idx", requireAnyCap("editData", "viewWorkers", "workerDocs", "legalization"), async (req, res) => {
   const id = Number(req.params.id), idx = Number(req.params.idx);
-  const [doc] = await db.select({ attrs: workerDocumentsTable.attrs }).from(workerDocumentsTable).where(eq(workerDocumentsTable.id, id));
+  const [doc] = await db.select({ attrs: workerDocumentsTable.attrs, workerId: workerDocumentsTable.workerId, docTypeId: workerDocumentsTable.docTypeId, title: workerDocumentsTable.title, issuedAt: workerDocumentsTable.issuedAt }).from(workerDocumentsTable).where(eq(workerDocumentsTable.id, id));
   const list = Array.isArray(doc?.attrs?.previousFiles) ? (doc!.attrs!.previousFiles as { filePath: string; fileName: string | null; fileMime: string | null }[]) : [];
   const prev = Number.isInteger(idx) ? list[idx] : undefined;
   if (!prev?.filePath) return fail(res, 404, "Попередньої версії не знайдено");
@@ -1830,8 +1831,9 @@ router.get("/worker-documents/:id/file/prev/:idx", requireAnyCap("editData", "vi
   if (!abs.startsWith(UPLOADS_ROOT) || !fs.existsSync(abs)) return fail(res, 404, "Файл не знайдено");
   if (prev.fileMime) res.type(prev.fileMime);
   res.setHeader("X-Content-Type-Options", "nosniff");
-  const downloadName = encodeURIComponent(prev.fileName || `document-${id}-v${idx + 1}`);
-  res.setHeader("Content-Disposition", `${req.query.download === "1" ? "attachment" : "inline"}; filename*=UTF-8''${downloadName}`);
+  const { label, fullName } = await docNameParts(doc!);
+  res.setHeader("Content-Disposition", contentDisposition(req.query.download === "1" ? "attachment" : "inline",
+    workerFileDownloadName({ label, fullName, date: dateOnly(doc!.issuedAt), fileName: prev.fileName, mime: prev.fileMime, suffix: `v${idx + 1}`, fallback: `document-${id}-v${idx + 1}` })));
   fs.createReadStream(abs).pipe(res);
 });
 
@@ -1888,12 +1890,21 @@ router.get("/worker-documents/:id/file", requireAnyCap("editData", "viewWorkers"
   // The stored MIME is now validated by magic bytes on upload; still force nosniff so the
   // browser can't reinterpret the response as an executable type.
   res.setHeader("X-Content-Type-Options", "nosniff");
-  const downloadName = encodeURIComponent(doc.fileName || `document-${id}`);
-  // ?download=1 — кнопка «Скачати» в профілі; без нього — перегляд у вкладці/модалці
+  // ?download=1 — кнопка «Скачати» в профілі; без нього — перегляд у вкладці/модалці.
+  // Імʼя — «Тип_NAZWISKO IMIE_дата» (зголошення #21), не оригінальна назва з телефону.
   const disposition = req.query.download === "1" ? "attachment" : "inline";
-  res.setHeader("Content-Disposition", `${disposition}; filename*=UTF-8''${downloadName}`);
+  const { label, fullName } = await docNameParts(doc);
+  res.setHeader("Content-Disposition", contentDisposition(disposition,
+    workerFileDownloadName({ label, fullName, date: dateOnly(doc.issuedAt) ?? dateOnly(doc.validFrom), fileName: doc.fileName, mime: doc.fileMime, fallback: `document-${id}` })));
   fs.createReadStream(abs).pipe(res);
 });
+// Частини імені файлу документа: тип (для «Inny» — назва, вписана офісом) і працівник
+const dateOnly = (v: unknown): string | null => (v == null ? null : typeof v === "string" ? v.slice(0, 10) : v instanceof Date ? v.toLocaleDateString("sv-SE", { timeZone: "Europe/Warsaw" }) : null);
+async function docNameParts(doc: { workerId: number; docTypeId: number | null; title: string }): Promise<{ label: string; fullName: string | null }> {
+  const [ty] = doc.docTypeId != null ? await db.select({ name: documentTypesTable.name, code: documentTypesTable.code }).from(documentTypesTable).where(eq(documentTypesTable.id, doc.docTypeId)) : [];
+  const [w] = await db.select({ fullName: workersTable.fullName }).from(workersTable).where(eq(workersTable.id, doc.workerId));
+  return { label: ty && ty.code !== "other" ? ty.name : (doc.title || ty?.name || ""), fullName: w?.fullName ?? null };
+}
 
 // Personal invite link for a worker — they tap it and the bot links their Telegram.
 // Binds via an unguessable invite_code (?start=emp<code>), regenerated here if missing/burned;

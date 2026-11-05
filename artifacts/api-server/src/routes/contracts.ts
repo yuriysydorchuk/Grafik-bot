@@ -13,6 +13,7 @@
 // api()/post(), що й решта панелі (на відміну від /auth/login, де лишився
 // застарілий «сирий» fetch без цього заголовка).
 import { Router, type IRouter } from "express";
+import { workerFileDownloadName, contentDisposition } from "../lib/downloadName";
 import multer from "multer";
 import path from "node:path";
 import fs from "node:fs";
@@ -795,7 +796,11 @@ router.get("/contracts/:id/files/:fileId", WD, async (req, res) => {
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("Content-Type", "application/pdf");
   const disposition = req.query.download === "1" ? "attachment" : "inline"; // ?download=1 — «Скачати» в профілі
-  res.setHeader("Content-Disposition", `${disposition}; filename="${file.title.replace(/[^\w.\- ]/g, "_")}.pdf"`);
+  // «Назва_NAZWISKO IMIE_дата початку.pdf» (зголошення #21); раніше діакритика назви ставала «_»
+  const [own] = await db.select({ fullName: workersTable.fullName, dateFrom: contractsTable.dateFrom }).from(contractsTable)
+    .innerJoin(workersTable, eq(contractsTable.workerId, workersTable.id)).where(eq(contractsTable.id, contractId));
+  res.setHeader("Content-Disposition", contentDisposition(disposition,
+    workerFileDownloadName({ label: file.title, fullName: own?.fullName, date: own?.dateFrom ? String(own.dateFrom).slice(0, 10) : null, fileName: "x.pdf", suffix: file.signedPath ? "podpisany" : null, fallback: `umowa-${contractId}` })));
   const stream = fs.createReadStream(abs);
   // помилка читання (права/диск) без обробника — необроблений 'error' стріму валить процес
   stream.on("error", () => { if (!res.headersSent) res.status(500).json({ error: "Не вдалося прочитати файл" }); else res.destroy(); });
