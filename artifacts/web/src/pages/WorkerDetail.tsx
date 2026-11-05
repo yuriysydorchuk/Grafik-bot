@@ -2750,6 +2750,32 @@ function otherDocState(doc: WorkerDocument, type: DocumentType | null, globals?:
 }
 
 const fmtDocDate = (d: string) => `${d.slice(8, 10)}.${d.slice(5, 7)}.${d.slice(0, 4)}`;
+
+// Звірка дат умови / powiadomienia / ZUA / ZWUA (GET /workers/:id/date-checks, зголошення #25): жовті
+// попередження над документами. Нічого не блокують і на статус легальності не впливають — лише
+// підсвічують, що дати розповідають різні історії. Ключ запиту під ["worker-docs", id] — оновлюється
+// разом з документами.
+type DateWarning =
+  | { code: "start_mismatch"; companyName: string | null; umowa: string | null; powiadomienie: string | null; zua: string | null }
+  | { code: "zua_before_permit"; companyName: string | null; zua: string; permitFrom: string; permitName: string }
+  | { code: "zwua_mismatch"; companyName: string | null; zwua: string; expected: string; fireDate: string };
+function DateWarnings({ workerId }: { workerId: number }) {
+  const t = useT();
+  const { data } = useQuery<{ warnings: DateWarning[] }>({ queryKey: ["worker-docs", workerId, "date-checks"], queryFn: () => get(`/workers/${workerId}/date-checks`) });
+  const list = data?.warnings ?? [];
+  if (!list.length) return null;
+  const text = (w: DateWarning) => {
+    if (w.code === "start_mismatch") return t("Дати початку не збігаються: {parts}", { parts: [w.umowa && `${t("умова")} ${fmtDocDate(w.umowa)}`, w.powiadomienie && `powiadomienie ${fmtDocDate(w.powiadomienie)}`, w.zua && `ZUA ${fmtDocDate(w.zua)}`].filter(Boolean).join(" · ") });
+    if (w.code === "zua_before_permit") return t("ZUA {zua} раніше, ніж почав діяти дозвіл на працю ({name} з {from})", { zua: fmtDocDate(w.zua), name: w.permitName, from: fmtDocDate(w.permitFrom) });
+    return t("ZWUA {zwua}, а звільнення {fire} — виреєстрування має бути наступним днем ({expected})", { zwua: fmtDocDate(w.zwua), fire: fmtDocDate(w.fireDate), expected: fmtDocDate(w.expected) });
+  };
+  return (
+    <div className="mx-4 mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+      <div className="mb-0.5 font-semibold">⚠ {t("Перевірте дати")}</div>
+      <ul className="space-y-0.5">{list.map((w, i) => <li key={i}>{w.companyName ? <b>{w.companyName}: </b> : null}{text(w)}</li>)}</ul>
+    </div>
+  );
+}
 const fmtShortDate = (d: string) => `${d.slice(8, 10)}.${d.slice(5, 7)}`;
 const DOC_TONE_CLS = { ok: "text-green-600", soon: "text-yellow-600", urgent: "text-rose-600", expired: "text-rose-600", pending: "text-blue-600", muted: "text-slate-400", warn: "text-amber-600", requested: "text-amber-600" } as const;
 // «запитано, чекаємо файл» — жовта плашка (і в порожніх слотах, і в рядках інших типів)
@@ -3285,6 +3311,7 @@ function WorkerDocuments({ workerId, workerName, companies, nationality, factory
         }
         empty={t("Немає документів. Додайте типи в Налаштуваннях → Документи.")}>
         <LegalitySummary workerId={workerId} />
+        <DateWarnings workerId={workerId} />
         <div className="border-t border-slate-100" />
         {isLoading ? <Spinner /> : (
           <DocSlotList types={types} docs={docs} companies={companies} employers={employers} nationality={nationality} requiresSanepid={requiresSanepid} globals={globals} canLegal={canLegal}

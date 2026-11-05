@@ -1724,6 +1724,11 @@ router.get("/workers/:id/documents", WORKERS_RO, async (req, res) => {
   const zus = await zusDocLabels(id, wk?.isActive ?? true);
   ok(res, zus.size ? docs.map(d => (zus.has(d.id) ? { ...d, zus: zus.get(d.id) } : d)) : docs);
 });
+// Звірка дат умови / powiadomienia / ZUA / ZWUA (services/dateChecks.ts, зголошення #25) — лише попередження
+router.get("/workers/:id/date-checks", WORKERS_RO, async (req, res) => {
+  const { workerDateWarnings } = await import("../services/dateChecks");
+  ok(res, { warnings: await workerDateWarnings(Number(req.params.id)) });
+});
 router.post("/workers/:id/documents", DOCS_RW, async (req, res) => {
   const workerId = Number(req.params.id);
   const docTypeId = req.body?.docTypeId != null ? Number(req.body.docTypeId) : null;

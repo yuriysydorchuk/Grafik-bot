@@ -222,3 +222,36 @@ test("пари ZUS (#16): звільняли й узяли знову — ста
   const docs3 = (await request(app).get(`/api/workers/${w!.id}/documents`).set("Cookie", owner)).body as any[];
   assert.deepEqual([docs3.find(d => d.id === newZua).zus.status, docs3.find(d => d.id === newZua).zus.until], ["closed", "2026-10-21"]);
 });
+
+test("звірка дат (#25): умова ≠ powiadomienie ≠ ZUA → start_mismatch; ZWUA не наступним днем після звільнення → zwua_mismatch; узгоджені дати — без попереджень", opts, async () => {
+  const { workerDateWarnings } = await import("./dateChecks.ts");
+  const { workerDocumentsTable, contractsTable } = await import("@workspace/db");
+  const [co] = await db.insert(companiesTable).values({ name: "ES" }).returning();
+  const [fa] = await db.insert(factoriesTable).values({ name: "LST", companyId: co!.id }).returning();
+  const [w] = await db.insert(workersTable).values({ fullName: "Daty Jan", factoryId: fa!.id, companyId: co!.id, isActive: true, nationality: "ukraine" }).returning();
+  const [zua] = await db.insert(documentTypesTable).values({ code: "zus_zua", name: "ZUS ZUA", required: false, hasExpiry: false }).returning();
+  const [zwua] = await db.insert(documentTypesTable).values({ code: "zus_zwua", name: "ZUS ZWUA", required: false, hasExpiry: false }).returning();
+  const [pow] = await db.insert(documentTypesTable).values({ code: "powiadomienie_ua", name: "Powiadomienie", required: false, hasExpiry: false }).returning();
+  await db.insert(contractsTable).values({ workerId: w!.id, factoryId: fa!.id, companyId: co!.id, status: "signed", dateFrom: "2026-10-21", data: {} });
+  const doc = (docTypeId: number, extra: Record<string, unknown>) => db.insert(workerDocumentsTable).values({ workerId: w!.id, docTypeId, title: "x", status: "present", employerCompanyId: co!.id, ...extra } as any).returning();
+  const [zuaDoc] = await doc(zua!.id, { issuedAt: "2026-10-21" });
+  assert.deepEqual(await workerDateWarnings(w!.id), [], "умова і ZUA з 21.10 — узгоджено");
+  const [powDoc] = await doc(pow!.id, { attrs: { dateFromActual: "2026-10-23" } });
+  const w1 = await workerDateWarnings(w!.id);
+  assert.deepEqual(w1.map(x => x.code), ["start_mismatch"]);
+  assert.deepEqual([(w1[0] as any).umowa, (w1[0] as any).powiadomienie, (w1[0] as any).zua, w1[0]!.companyName], ["2026-10-21", "2026-10-23", "2026-10-21", "ES"]);
+  await db.update(workerDocumentsTable).set({ attrs: { dateFromActual: "2026-10-21" } } as any).where(eq(workerDocumentsTable.id, powDoc!.id));
+  assert.deepEqual(await workerDateWarnings(w!.id), []);
+
+  // звільнено 30.10, ZWUA внесли з 05.11 → має бути 31.10
+  await db.update(workersTable).set({ isActive: false, status: "fired", firedAt: new Date("2026-10-30T12:00:00") } as any).where(eq(workersTable.id, w!.id));
+  const [zwuaDoc] = await doc(zwua!.id, { issuedAt: "2026-11-05" });
+  const w2 = await workerDateWarnings(w!.id);
+  assert.deepEqual(w2.map(x => x.code), ["zwua_mismatch"]);
+  assert.deepEqual([(w2[0] as any).zwua, (w2[0] as any).expected], ["2026-11-05", "2026-10-31"]);
+  await db.update(workerDocumentsTable).set({ issuedAt: "2026-10-31" } as any).where(eq(workerDocumentsTable.id, zwuaDoc!.id));
+  assert.deepEqual(await workerDateWarnings(w!.id), []);
+  void zuaDoc;
+  const api = await request(app).get(`/api/workers/${w!.id}/date-checks`).set("Cookie", owner);
+  assert.equal(api.status, 200); assert.deepEqual(api.body.warnings, []);
+});
