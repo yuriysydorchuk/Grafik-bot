@@ -90,12 +90,18 @@ export async function startTerminationFlow(worker: Worker, fireDate: string, act
       const [co] = companyId != null ? await db.select({ name: companiesTable.name }).from(companiesTable).where(eq(companiesTable.id, companyId)) : [undefined];
       const coLabel = companyId != null ? (co?.name ?? `фірма #${companyId}`) : null;
       const assignee = await resolveAssignee({ factoryId: null, ruleCode: "termination_zus" });
-      await createTask({
+      if (!(await stillFired())) return; // звільнення скасували, поки йшов ланцюжок
+      const zt = await createTask({
         kind: "task", title: `Виреєструвати з ZUS (ZWUA${coLabel ? `, ${coLabel}` : ""}): ${worker.fullName}`, description: await zwuaTaskDescription(worker.id, fireDate, companyId), priority: "high", dueAt: addDaysStr(fireDate, 7), assigneeAdminId: assignee,
         workerId: worker.id, factoryId: worker.factoryId, source: "auto:termination_zus", sourceKey: zwuaKey,
         autoParams: { workerName: worker.fullName, fireDate, docTypeCode: "zus_zwua", ...(companyId != null ? { companyId } : {}) },
         checklist: normalizeChecklist([{ id: "", text: `Подати ZUS ZWUA (Płatnik / PUE ZUS)${coLabel ? ` — ${coLabel}` : ""}`, done: false }, { id: "", text: "Внести підтвердження ZWUA в профіль", done: false, auto: "entered" }]),
       }, actorAdminId);
+      // відкат «звільнили помилково» міг пройти між перевіркою і створенням — прибираємо щойно створену задачу
+      if (!(await stillFired())) {
+        await db.update(tasksTable).set({ status: "cancelled", completedAt: new Date(), resolutionNote: "звільнення скасовано (помилкове)", sourceKey: sql`${tasksTable.sourceKey} || ':undone:' || ${tasksTable.id}::text`, updatedAt: new Date() }).where(eq(tasksTable.id, zt.id));
+        return;
+      }
     }
   }
 
