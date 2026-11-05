@@ -1682,7 +1682,11 @@ router.delete("/document-types/:id", RW, async (req, res) => {
 router.get("/workers/:id/documents", WORKERS_RO, async (req, res) => {
   const id = Number(req.params.id);
   const docs = await db.select().from(workerDocumentsTable).where(eq(workerDocumentsTable.workerId, id)).orderBy(desc(workerDocumentsTable.id));
-  ok(res, docs);
+  // ZUS: стан пари «зголошення ↔ виреєстрування» на кожен ZUA/ZZA/ZWUA (services/zusPairs.ts, зголошення #16)
+  const [wk] = await db.select({ isActive: workersTable.isActive }).from(workersTable).where(eq(workersTable.id, id));
+  const { zusDocLabels } = await import("../services/zusPairs");
+  const zus = await zusDocLabels(id, wk?.isActive ?? true);
+  ok(res, zus.size ? docs.map(d => (zus.has(d.id) ? { ...d, zus: zus.get(d.id) } : d)) : docs);
 });
 router.post("/workers/:id/documents", DOCS_RW, async (req, res) => {
   const workerId = Number(req.params.id);

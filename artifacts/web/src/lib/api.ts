@@ -146,7 +146,14 @@ export interface WorkerDocument {
   source: "office" | "worker_bot" | "ocr" | "import"; replacesDocumentId: number | null;
   requestedAt: string | null; requestedBy: number | null; requestRemindCount?: number; requestRemindedAt?: string | null;
   attrs: Record<string, unknown> | null; // типоспецифічні атрибути (lib/documentFields.ts): TRC {laborMarketAccess}
+  // ZUS ZUA/ZZA/ZWUA: стан пари «зголошення ↔ виреєстрування» по фірмі (services/zusPairs.ts, зголошення #16)
+  zus?: ZusPairState;
 }
+export type ZusPairState =
+  | { kind: "reg"; status: "open"; date: string; needsDereg?: boolean }      // чинне (needsDereg — людину звільнено / умови з фірмою вже немає)
+  | { kind: "reg"; status: "closed"; date: string; until: string }           // діяло до дати ZWUA
+  | { kind: "reg"; status: "replaced"; date: string }                        // замінене новішим зголошенням без ZWUA
+  | { kind: "dereg"; date: string; closesId: number | null; regDate: string | null };
 export interface LegalizationGlobals { today: string; ukrStatusEnd: string | null; defaultLeadDays: number; urgentDays: number }
 // Мапа «група виплат ↔ старий статус ↔ типи документів» (GET /legalization/status-map, services/legalStatusMap.ts)
 export type PayrollGroupCode = "A_cash" | "B_student" | "C_registered" | "N_none";

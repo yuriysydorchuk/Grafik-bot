@@ -103,12 +103,12 @@ export async function collectCandidates(today = warsawToday()): Promise<Candidat
     const fired = (await db.select({ id: workersTable.id, fullName: workersTable.fullName, factoryId: workersTable.factoryId, firedAt: workersTable.firedAt })
       .from(workersTable).where(and(eq(workersTable.isActive, false), gte(workersTable.firedAt, firedFrom))))
       .filter(f => !settings.legacyBefore || (dateStr(f.firedAt) ?? "") >= settings.legacyBefore);
-    const zwua = (await db.select().from(documentTypesTable).where(eq(documentTypesTable.code, "zus_zwua")))[0];
-    const firedIds = fired.map(f => f.id);
-    const have = new Set(zwua && firedIds.length ? (await db.select({ workerId: workerDocumentsTable.workerId }).from(workerDocumentsTable).where(and(inArray(workerDocumentsTable.workerId, firedIds), eq(workerDocumentsTable.docTypeId, zwua.id), ne(workerDocumentsTable.status, "missing")))).map(d => d.workerId) : []);
+    // «ZWUA вже є» = ZWUA саме ЦЬОГО звільнення (zwuaCoversFiring): старий ZWUA людини, яку взяли
+    // знову й звільнили вдруге, нову задачу не гасить (зголошення #16)
+    const firedZwua = await zwuaDocDates(fired.map(f => f.id));
     for (const f of fired) {
-      if (have.has(f.id)) continue;
       const fireDate = dateStr(f.firedAt)!;
+      if (await zwuaCoversFiring(f.id, firedZwua.get(f.id) ?? [], fireDate, f.firedAt)) continue;
       const due = addDaysStr(fireDate, lead);
       const { zwuaTaskDescription } = await import("./terminationFlow");
       out.push({ sourceKey: `zwua:${f.id}`, rule: "termination_zus", title: `Виреєструвати з ZUS (ZWUA): ${f.fullName}`, description: await zwuaTaskDescription(f.id, fireDate, null), priority: diffDays(due, today) < 0 ? "urgent" : "high", dueAt: due,
@@ -122,7 +122,7 @@ export async function collectCandidates(today = warsawToday()): Promise<Candidat
       .filter(t => t.sourceKey && t.workerId && !pushed.has(t.sourceKey) && t.sourceKey.split(":").length === 3);
     const zDocs = await zwuaDocDates(openZ.map(t => t.workerId!));
     for (const t of openZ) {
-      if (zwuaSatisfied(t, zDocs)) continue;
+      if (await zwuaSatisfied(t, zDocs)) continue;
       out.push({ sourceKey: t.sourceKey!, rule: "termination_zus", title: t.title, priority: t.priority as TaskPriority, dueAt: dateStr(t.dueAt), workerId: t.workerId, factoryId: t.factoryId, autoParams: (t.autoParams ?? {}) as Record<string, unknown>, assign: { factoryId: null } });
     }
   }
@@ -393,25 +393,36 @@ export async function ensurePendingDocTask(documentId: number): Promise<Task | n
 }
 
 // ZWUA у профілі (не missing): дати внесення по працівниках.
-type ZwuaDoc = { at: Date; companyId: number | null };
+type ZwuaDoc = { at: Date; companyId: number | null; date: string | null };
 async function zwuaDocDates(workerIds: number[]): Promise<Map<number, ZwuaDoc[]>> {
   const out = new Map<number, ZwuaDoc[]>();
   if (!workerIds.length) return out;
   const [ty] = await db.select({ id: documentTypesTable.id }).from(documentTypesTable).where(eq(documentTypesTable.code, "zus_zwua"));
   if (!ty) return out;
-  const docs = await db.select({ workerId: workerDocumentsTable.workerId, createdAt: workerDocumentsTable.createdAt, updatedAt: workerDocumentsTable.updatedAt, companyId: workerDocumentsTable.employerCompanyId }).from(workerDocumentsTable)
+  const docs = await db.select({ workerId: workerDocumentsTable.workerId, createdAt: workerDocumentsTable.createdAt, updatedAt: workerDocumentsTable.updatedAt, companyId: workerDocumentsTable.employerCompanyId, issuedAt: workerDocumentsTable.issuedAt, expiresAt: workerDocumentsTable.expiresAt }).from(workerDocumentsTable)
     .where(and(inArray(workerDocumentsTable.workerId, [...new Set(workerIds)]), eq(workerDocumentsTable.docTypeId, ty.id), ne(workerDocumentsTable.status, "missing")));
   // «внесено» = пізніша з дат створення/зміни: запрошений раніше рядок (missing), заповнений після задачі, теж рахується
-  for (const d of docs) out.set(d.workerId, [...(out.get(d.workerId) ?? []), { at: d.updatedAt && d.updatedAt > d.createdAt ? d.updatedAt : d.createdAt, companyId: d.companyId ?? null }]);
+  for (const d of docs) out.set(d.workerId, [...(out.get(d.workerId) ?? []), { at: d.updatedAt && d.updatedAt > d.createdAt ? d.updatedAt : d.createdAt, companyId: d.companyId ?? null, date: dateStr(d.issuedAt) ?? dateStr(d.expiresAt) }]);
   return out;
 }
-// Задача ZWUA закрита документом? zwua:<w> — будь-який ZWUA у профілі (як нічний кандидат);
+// ZWUA цього звільнення: внесений після звільнення, або з датою виреєстрування не ранішою за звільнення
+// (допуск 14 днів — дату звільнення в системі могли поставити пізнішою за фактичну). Якщо в людини є
+// ЧИННЕ зголошення (ZUA/ZZA після останнього ZWUA — її взяли знову), жоден старий ZWUA не рахується.
+async function zwuaCoversFiring(workerId: number, docs: ZwuaDoc[], fireDate: string | null, since: Date | null): Promise<boolean> {
+  if (!docs.length) return false;
+  if (!fireDate) return true;
+  const fresh = docs.some(d => (since != null && d.at > since) || (d.date != null && d.date >= addDaysStr(fireDate, -14)));
+  if (!fresh) return false;
+  const { loadZusPairs, openRegistrations } = await import("./zusPairs");
+  return openRegistrations(await loadZusPairs(workerId), null).length === 0;
+}
+// Задача ZWUA закрита документом? zwua:<w> — ZWUA цього звільнення (zwuaCoversFiring, як нічний кандидат);
 // zwua:<w>:<company> — внесений ПІСЛЯ задачі і (якщо на документі вказано роботодавця) саме цієї
 // фірми: старий ZWUA попередньої фірми й ZWUA іншої фірми нову задачу не закривають.
-function zwuaSatisfied(t: Task, docs: Map<number, ZwuaDoc[]>): boolean {
+async function zwuaSatisfied(t: Task, docs: Map<number, ZwuaDoc[]>): Promise<boolean> {
   const list = docs.get(t.workerId ?? -1) ?? [];
   const parts = (t.sourceKey ?? "").split(":");
-  if (parts.length !== 3) return list.length > 0;
+  if (parts.length !== 3) return zwuaCoversFiring(t.workerId ?? -1, list, ((t.autoParams ?? {}) as { fireDate?: string }).fireDate ?? null, t.createdAt);
   const companyId = Number(parts[2]);
   return list.some(d => d.at > t.createdAt && (d.companyId == null || d.companyId === companyId));
 }
@@ -424,7 +435,7 @@ export async function resolveZwuaTasksNow(workerId: number): Promise<number> {
   const docs = await zwuaDocDates([workerId]);
   let n = 0;
   for (const t of open) {
-    if (!zwuaSatisfied(t, docs)) continue;
+    if (!(await zwuaSatisfied(t, docs))) continue;
     await db.update(tasksTable).set({ status: "auto_resolved", completedAt: new Date(), resolutionNote: "документ ZUS ZWUA внесено в профіль", updatedAt: new Date() }).where(eq(tasksTable.id, t.id));
     await logTaskEvent(t.id, "auto_resolved", null);
     n++;

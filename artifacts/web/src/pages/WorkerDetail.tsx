@@ -2738,6 +2738,9 @@ function docTone(s: Extract<DocRowState, { kind: "doc" }>): keyof typeof DOC_TON
   if (s.requested) return "requested";
   if (s.pending) return "pending";
   if (s.expired) return "expired";
+  // ZUS: чинне зголошення — зелене; закрите ZWUA / замінене — сіре (історія); чинне при звільненні — червоне «потрібна ZWUA»
+  const z = s.doc.zus;
+  if (z?.kind === "reg") return z.status === "open" ? (z.needsDereg ? "urgent" : "ok") : "muted";
   if (s.indefinite) return "ok"; // безстроковий і підтверджений — зелений, як чинний паспорт (23.10.2026)
   if (!s.expiresAt) return "warn";
   const tone = expiryTone(daysUntil(s.expiresAt), leadDaysCache); // жовта/червона зона з правила легальності
@@ -2831,6 +2834,12 @@ function DocRow({ icon: Icon, label, subLabel, state, canLegal, companies, reque
   const stateText = state.requested ? (doc.requestedAt ? `${t("немає")} · ${t("запрошено {date}", { date: fmtShortDate(doc.requestedAt) })}${doc.requestedBy == null ? " 🤖" : ""}${(doc.requestRemindCount ?? 0) > 0 ? ` · ${t("нагад.")} ${doc.requestRemindCount}` : ""}` : t("немає файлу"))
     : state.pending ? t("⏳ на перевірці")
     : state.expired ? (state.expiresAt ? t("прострочено {date}", { date: fmtDocDate(state.expiresAt) }) : t("прострочено")) // статус expired без дати (справа/ZWUA) — без null.slice
+    // ZUS — пари за датами (зголошення #16): кожне зголошення показує СВІЙ стан, а не однакове «чинне до ZWUA»
+    : doc.zus?.kind === "dereg" ? (doc.zus.regDate ? t("виреєстровано {date} · закрило зголошення від {reg}", { date: fmtDocDate(doc.zus.date), reg: fmtDocDate(doc.zus.regDate) }) : t("виреєстровано {date}", { date: fmtDocDate(doc.zus.date) }))
+    : doc.zus?.kind === "reg" ? (doc.zus.status === "closed" ? t("зголошено {date} · діяло до {until}", { date: fmtDocDate(doc.zus.date), until: fmtDocDate(doc.zus.until) })
+        : doc.zus.status === "replaced" ? t("зголошено {date} · замінене новішим зголошенням", { date: fmtDocDate(doc.zus.date) })
+        : doc.zus.needsDereg ? t("зголошено {date} · потрібна ZWUA", { date: fmtDocDate(doc.zus.date) })
+        : t("зголошено {date} · чинне", { date: fmtDocDate(doc.zus.date) }))
     : state.indefinite && type?.code === "zus_zwua" ? ((doc.issuedAt ?? doc.expiresAt) ? t("виреєстровано {date}", { date: fmtDocDate((doc.issuedAt ?? doc.expiresAt)!) }) : t("дата не вказана"))
     : state.indefinite && (type?.code === "zus_zua" || type?.code === "zus_zza") ? ((doc.issuedAt ?? doc.expiresAt) ? t("зголошено {date} · чинне до ZWUA", { date: fmtDocDate((doc.issuedAt ?? doc.expiresAt)!) }) : t("дата не вказана"))
     : type?.code === "stay_case_certificate" ? (doc.caseStatus === "submitted" || doc.caseStatus === "in_progress" || !doc.caseStatus

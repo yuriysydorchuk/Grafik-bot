@@ -55,12 +55,12 @@ export async function zusRegistrationTypeIds(): Promise<number[]> {
   return (await db.select({ id: documentTypesTable.id }).from(documentTypesTable).where(inArray(documentTypesTable.code, [...ZUS_REGISTRATION_CODES]))).map(t => t.id);
 }
 
-// Документи зголошення (ZUA/ZZA) працівника (крім missing) — для «вже в профілі» при створенні й для авторезолву.
+// ЧИННІ зголошення (ZUA/ZZA) працівника — для «вже в профілі» при створенні й для авторезолву.
+// Зголошення, закрите ZWUA (людину звільняли й узяли знову), чинним не є: нова умова вимагає нового
+// зголошення, і задача закривається саме ним (пари — services/zusPairs.ts, зголошення #16).
 async function zuaDocs(workerId: number) {
-  const tys = await zusRegistrationTypeIds();
-  if (!tys.length) return [];
-  return db.select({ id: workerDocumentsTable.id, createdAt: workerDocumentsTable.createdAt, companyId: workerDocumentsTable.employerCompanyId, issuedAt: workerDocumentsTable.issuedAt, submittedAt: workerDocumentsTable.submittedAt })
-    .from(workerDocumentsTable).where(and(eq(workerDocumentsTable.workerId, workerId), inArray(workerDocumentsTable.docTypeId, tys), ne(workerDocumentsTable.status, "missing")));
+  const { loadZusPairs, openRegistrations } = await import("./zusPairs");
+  return openRegistrations(await loadZusPairs(workerId), null).map(r => ({ id: r.id, companyId: r.state.companyId, date: r.date }));
 }
 
 // Чинні (підписані працівником або обома) умови-umowa працівника з цією фірмою — для «ще є що зголошувати».
@@ -99,7 +99,7 @@ export async function startHireRegistrationFlow(contractIds: number[], actorAdmi
       const [co] = companyId != null ? await db.select({ name: companiesTable.name }).from(companiesTable).where(eq(companiesTable.id, companyId)) : [undefined];
       const coLabel = companyId != null ? (co?.name ?? `фірма #${companyId}`) : null;
       const zuaHave = (await zuaDocs(c.workerId)).filter(d => docForCompany(d, companyId));
-      const zuaAt = zuaHave.map(d => dateStr(d.submittedAt) ?? dateStr(d.issuedAt) ?? dateStr(d.createdAt)).filter(Boolean).sort().pop() ?? null;
+      const zuaAt = zuaHave.map(d => d.date).filter(Boolean).sort().pop() ?? null;
 
       const dateFrom = dateStr(c.dateFrom);
       const today = warsawToday();

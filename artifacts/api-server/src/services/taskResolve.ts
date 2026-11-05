@@ -347,7 +347,10 @@ export async function buildTaskResolution(task: Task): Promise<{ context: TaskCo
       const ty = await typeByCode("zus_zua");
       const zza = await typeByCode("zus_zza"); // ZZA (лише zdrowotne) теж закриває зголошення (#13)
       if (ty && worker && p.docTypeCode === "zus_zua") {
-        const hit = workerDocs.find(x => (x.d.docTypeId === ty.id || (zza != null && x.d.docTypeId === zza.id)) && x.d.status !== "missing" && (x.d.employerCompanyId == null || p.companyId == null || x.d.employerCompanyId === p.companyId))?.d;
+        // лише ЧИННЕ зголошення цієї фірми: закрите ZWUA (звільняли й узяли знову) задачу не закриває (#16)
+        const { loadZusPairs, openRegistrations } = await import("./zusPairs");
+        const openIds = new Set(openRegistrations(await loadZusPairs(worker.id), p.companyId ?? null).map(r => r.id));
+        const hit = workerDocs.find(x => openIds.has(x.d.id))?.d;
         const hitTy = hit && zza && hit.docTypeId === zza.id ? zza : ty;
         ctx.document = hit ? docCtx(hit, hitTy.name, hitTy.code) : null;
         if (hit) satisfied.add("entered");

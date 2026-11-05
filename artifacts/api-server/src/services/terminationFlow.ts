@@ -30,11 +30,9 @@ export async function zwuaTaskDescription(workerId: number, fireDate: string, co
   const w = await effectiveViewOf(raw);
   const bd = dateStr(raw.birthDate);
   const student26 = !!w.isStudent && (bd ? isUnder26(bd) : !!raw.under26);
-  // зголошення = ZUA або ZZA (hireRegistration.ZUS_REGISTRATION_CODES)
-  const regTys = await db.select({ id: documentTypesTable.id }).from(documentTypesTable).where(inArray(documentTypesTable.code, ["zus_zua", "zus_zza"]));
-  const zua = regTys.length ? await db.select({ companyId: workerDocumentsTable.employerCompanyId }).from(workerDocumentsTable)
-    .where(and(eq(workerDocumentsTable.workerId, workerId), inArray(workerDocumentsTable.docTypeId, regTys.map(t => t.id)), ne(workerDocumentsTable.status, "missing"))) : [];
-  const hasZua = zua.some(d => d.companyId == null || companyId == null || d.companyId === companyId);
+  // чинне зголошення = ZUA або ZZA, ще не закрите ZWUA (services/zusPairs.ts)
+  const { loadZusPairs, openRegistrations } = await import("./zusPairs");
+  const hasZua = openRegistrations(await loadZusPairs(workerId), companyId).length > 0;
   // «⚠ » — важливий рядок, веб показує його виділено (зголошення #13)
   if (student26 && !hasZua) lines.push("⚠ Студент до 26 без ZUA/ZZA в профілі — до ZUS не зголошувався, виреєстрування (ZWUA) не потрібне.");
   else lines.push(`Дата виреєстрування з ZUS (ZWUA): ${fmtDate(addDaysStr(fireDate, 1))}${student26 ? " (студент до 26, але ZUA є в профілі)" : ""}`);

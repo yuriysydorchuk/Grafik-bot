@@ -172,3 +172,53 @@ test("PATCH /workers/:id: зміна фабрики тягне фірму фаб
   const r4 = await patch({ factoryId: a!.id, companyId: eso!.id });
   assert.deepEqual([r4.body.companyId, r4.body.autoCompany], [eso!.id, null], "фірму передано явно (форма редагування) — лишається вибрана");
 });
+
+test("пари ZUS (#16): звільняли й узяли знову — стара ZUA, закрита ZWUA, не рахується зголошенням; старий ZWUA не гасить нову задачу виреєстрування", opts, async () => {
+  const [co] = await db.insert(companiesTable).values({ name: "ES" }).returning();
+  const [fa] = await db.insert(factoriesTable).values({ name: "LST", companyId: co!.id }).returning();
+  const [w] = await db.insert(workersTable).values({ fullName: "Powrot Jan", factoryId: fa!.id, companyId: co!.id, isActive: true, nationality: "ukraine", birthDate: "1990-05-05" }).returning();
+  const [zua] = await db.insert(documentTypesTable).values({ code: "zus_zua", name: "ZUS ZUA", required: false, hasExpiry: false }).returning();
+  const [zwua] = await db.insert(documentTypesTable).values({ code: "zus_zwua", name: "ZUS ZWUA", required: false, hasExpiry: false }).returning();
+  const addDoc = async (docTypeId: number, issuedAt: string) => {
+    const r = await request(app).post(`/api/workers/${w!.id}/documents`).set("Cookie", owner).set(H).send({ docTypeId, issuedAt, employerCompanyId: co!.id });
+    assert.equal(r.status, 200, JSON.stringify(r.body)); return r.body.id as number;
+  };
+  // перший найм: зголошений 01.03, виреєстрований 11.06
+  const oldZua = await addDoc(zua!.id, "2026-03-01");
+  const oldZwua = await addDoc(zwua!.id, "2026-06-11");
+
+  // нова умова після повернення → задача вимагає НОВОГО зголошення (а не «ZUA вже є — перевірити»)
+  await importContract(w!.id, fa!.id, co!.id);
+  let [t] = await hireTasks(w!.id);
+  assert.ok(t, "задача зголошення");
+  assert.equal((t!.autoParams as Record<string, unknown>).docTypeCode, "zus_zua", "стара ZUA закрита ZWUA — потрібне нове зголошення");
+  assert.equal(t!.status, "open");
+
+  const newZua = await addDoc(zua!.id, "2026-10-05");
+  [t] = await hireTasks(w!.id);
+  assert.equal(t!.status, "auto_resolved", "нове зголошення закриває задачу");
+
+  // профіль: кожен документ зі своїм станом пари
+  const docs = (await request(app).get(`/api/workers/${w!.id}/documents`).set("Cookie", owner)).body as any[];
+  const z = (id: number) => docs.find(d => d.id === id).zus;
+  assert.deepEqual([z(oldZua).status, z(oldZua).until], ["closed", "2026-06-11"]);
+  assert.deepEqual([z(oldZwua).kind, z(oldZwua).closesId, z(oldZwua).regDate], ["dereg", oldZua, "2026-03-01"]);
+  assert.deepEqual([z(newZua).status, z(newZua).needsDereg], ["open", false]);
+
+  // друге звільнення: старий ZWUA (11.06) задачу виреєстрування НЕ закриває; чинне зголошення → «потрібна ZWUA»
+  const { fireWorker } = await import("./workerFire.ts");
+  assert.equal((await fireWorker({ workerId: w!.id, date: "2026-10-20", adminId: null, source: "web" })).ok, true);
+  await wait(500);
+  const zwuaTasks = () => db.select().from(tasksTable).where(and(eq(tasksTable.source, "auto:termination_zus"), eq(tasksTable.workerId, w!.id)));
+  assert.equal((await zwuaTasks())[0]?.status, "open");
+  const { runAutoTasks } = await import("./taskAutoRules.ts");
+  await runAutoTasks("2026-10-21");
+  assert.equal((await zwuaTasks())[0]!.status, "open", "нічний синк не закриває задачу старим ZWUA");
+  const docs2 = (await request(app).get(`/api/workers/${w!.id}/documents`).set("Cookie", owner)).body as any[];
+  assert.equal(docs2.find(d => d.id === newZua).zus.needsDereg, true);
+  // новий ZWUA (21.10) закриває і зголошення, і задачу
+  await addDoc(zwua!.id, "2026-10-21");
+  assert.equal((await zwuaTasks())[0]!.status, "auto_resolved");
+  const docs3 = (await request(app).get(`/api/workers/${w!.id}/documents`).set("Cookie", owner)).body as any[];
+  assert.deepEqual([docs3.find(d => d.id === newZua).zus.status, docs3.find(d => d.id === newZua).zus.until], ["closed", "2026-10-21"]);
+});
