@@ -50,13 +50,37 @@ test("після рапорту: розбіжність → спір із при
   let r = await row(fh.id);
   assert.deepEqual([r.workerResponse, r.workerNote], ["dispute", "Рапорт працівника: 152 год (фабрика: 160 год)"]);
   assert.match(replies[0]!, /152.*160/s);
-  // чужий рядок не чіпаємо
-  await ackAfterMonthlyReport(ctx, "uk", { fhId: fh.id, workerId: w.id + 999, reportHours: 160 });
+  // відповідь уже є — повторний виклик (друге фото, застарілий маркер) нічого не перезаписує
+  await ackAfterMonthlyReport(ctx, "uk", { fhId: fh.id, workerId: w.id, reportHours: 160 });
   assert.equal((await row(fh.id)).workerResponse, "dispute");
+  assert.equal(replies.length, 1);
+  // збіг на свіжому запиті → підтверджено; чужий рядок не чіпаємо
+  await db.update(factoryHoursTable).set({ workerResponse: null, workerNote: null }).where(eq(factoryHoursTable.id, fh.id));
+  await ackAfterMonthlyReport(ctx, "uk", { fhId: fh.id, workerId: w.id + 999, reportHours: 160 });
+  assert.equal((await row(fh.id)).workerResponse, null);
   await ackAfterMonthlyReport(ctx, "uk", { fhId: fh.id, workerId: w.id, reportHours: 160 });
   r = await row(fh.id);
   assert.deepEqual([r.workerResponse, r.workerNote], ["confirmed", null]);
   assert.match(replies.at(-1)!, /збігаються/);
+});
+
+test("не працював на цій фабриці: у рапорті з підказки «0» одразу стає спором; друге натискання кнопок запиту нічого не міняє", opts, async () => {
+  const { fh } = await seed();
+  await pressButton(TID, `fh:no:${fh.id}`);
+  assert.match(sentText(), /впиши \*0\*/);
+  await pressButton(TID, `fhr:${fh.id}`);
+  resetSent();
+  await sendText(TID, "0");
+  const r = await row(fh.id);
+  assert.deepEqual([r.workerResponse, r.workerNote], ["dispute", "Рапорт працівника: 0 год (фабрика: 160 год)"]);
+  assert.equal(getState(TID), undefined);
+  // кнопки запиту ще на екрані: «Все вірно» після записаної відповіді спір не стирає, «Є помилка» не шле вдруге
+  resetSent();
+  await pressButton(TID, `fh:ok:${fh.id}`);
+  assert.equal((await row(fh.id)).workerResponse, "dispute");
+  await pressButton(TID, `fh:no:${fh.id}`);
+  assert.equal(getState(TID), undefined, "пояснення вдруге не питаємо");
+  assert.ok(sent.some(s => s.method === "answerCallbackQuery" && /уже записана/.test(String(s.extra?.text ?? ""))));
 });
 
 test("з рапортом «Є помилка» працює як раніше: спір + пояснення текстом", opts, async () => {

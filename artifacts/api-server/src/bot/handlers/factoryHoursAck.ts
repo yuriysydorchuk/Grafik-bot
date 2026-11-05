@@ -17,7 +17,7 @@ import { t, asLang, DATE_LOCALE, type Lang } from "../i18n";
 import { mdSafe } from "../display";
 import { cancelKb, leaverMenu } from "../menus";
 import { notifyAdmins, notifyRoles } from "../notify";
-import { setWeekAckResponse } from "../../services/weeklyHours";
+import { setWeekAckResponse, ensureWeeklyReport } from "../../services/weeklyHours";
 import { ddmm, weekEnd, weekLabel } from "../../lib/weekMath";
 import { logger } from "../../lib/logger";
 
@@ -59,6 +59,8 @@ export async function ackAfterMonthlyReport(ctx: Context, lang: Lang, p: { fhId:
   try {
     const [row] = await db.select().from(factoryHoursTable).where(eq(factoryHoursTable.id, p.fhId));
     if (!row || row.workerId !== p.workerId) return;
+    // відповідь уже є (людина передумала й натиснула «Все вірно», або це друге фото того самого рапорту) — не перезаписуємо
+    if (row.workerResponse != null) return;
     const [w] = await db.select({ fullName: workersTable.fullName }).from(workersTable).where(eq(workersTable.id, p.workerId));
     if (Math.abs(row.hours - p.reportHours) < EPS) {
       await db.update(factoryHoursTable).set({ workerResponse: "confirmed", workerResponseAt: new Date(), workerNote: null }).where(eq(factoryHoursTable.id, row.id));
@@ -77,6 +79,7 @@ export async function ackAfterWeeklyReport(ctx: Context, lang: Lang, p: { fhwId:
   try {
     const [row] = await db.select().from(factoryWeekHoursTable).where(eq(factoryWeekHoursTable.id, p.fhwId));
     if (!row || row.workerId !== p.workerId) return;
+    if (row.workerResponse != null) return; // відповідь уже є — не перезаписуємо
     const [w] = await db.select({ fullName: workersTable.fullName }).from(workersTable).where(eq(workersTable.id, p.workerId));
     if (Math.abs(row.hours - p.hoursReported) < EPS) {
       await setWeekAckResponse(row.id, "confirmed");
@@ -96,6 +99,13 @@ export function registerFactoryHoursAck(bot: Telegraf, deps: FactoryHoursAckDeps
     await ctx.answerCbQuery(t(lang, "fh.gone"));
     await ctx.editMessageReplyMarkup(undefined).catch(() => {});
   };
+  // Кнопки запиту лишаються живими, поки людина здає рапорт; коли відповідь уже записана (вручну або
+  // автоматично після рапорту), друге натискання нічого не міняє — інакше «Є помилка» вдруге дала б
+  // офісу друге сповіщення, а «Все вірно» мовчки стерло б спір. Нова розсилка відповідь скидає.
+  const answered = async (ctx: Context, lang: Lang) => {
+    await ctx.answerCbQuery(t(lang, "fh.answered"));
+    await ctx.editMessageReplyMarkup(undefined).catch(() => {});
+  };
 
   // ── місяць ───────────────────────────────────────────────────────────────
   bot.action(/^fh:(ok|no):(\d+)$/, async (ctx) => {
@@ -107,6 +117,7 @@ export function registerFactoryHoursAck(bot: Telegraf, deps: FactoryHoursAckDeps
     const [row] = await db.select().from(factoryHoursTable).where(eq(factoryHoursTable.id, fhId));
     // рядок міг зникнути (очистка колонки/переімпорт) або належати не цій людині
     if (!row || !worker || row.workerId !== worker.id) return gone(ctx, lang);
+    if (row.workerResponse != null) return answered(ctx, lang);
     const fac = await factoryName(row.factoryId);
     const month = monthLabel(lang, row.month);
     if (kind === "ok") {
@@ -138,6 +149,7 @@ export function registerFactoryHoursAck(bot: Telegraf, deps: FactoryHoursAckDeps
     const lang = asLang(worker?.language);
     const [row] = await db.select().from(factoryHoursTable).where(eq(factoryHoursTable.id, Number(ctx.match[1])));
     if (!row || !worker || row.workerId !== worker.id) return gone(ctx, lang);
+    if (row.workerResponse != null) return answered(ctx, lang);
     await ctx.answerCbQuery();
     await ctx.editMessageReplyMarkup(undefined).catch(() => {});
     return deps.startMonthlyReport(ctx, tid, worker, row.month, lang, row.factoryId, { fhAck: row.id });
@@ -152,6 +164,7 @@ export function registerFactoryHoursAck(bot: Telegraf, deps: FactoryHoursAckDeps
     const lang = asLang(worker?.language);
     const [row] = await db.select().from(factoryWeekHoursTable).where(eq(factoryWeekHoursTable.id, id));
     if (!row || !worker || row.workerId !== worker.id) return gone(ctx, lang);
+    if (row.workerResponse != null) return answered(ctx, lang);
     const fac = await factoryName(row.factoryId);
     const ws = String(row.weekStart);
     if (kind === "ok") {
@@ -160,11 +173,10 @@ export function registerFactoryHoursAck(bot: Telegraf, deps: FactoryHoursAckDeps
       await ctx.editMessageReplyMarkup(undefined).catch(() => {});
       return ctx.reply(t(lang, "fh.confirmedWeek", { hours: row.hours, factory: mdSafe(fac), from: ddmm(ws), to: ddmm(weekEnd(ws)) }), { parse_mode: "Markdown" });
     }
-    // рядок тижневого рапорту створює понеділковий запит; ще не поданий → спершу рапорт.
-    // Рядка немає взагалі (запиту рапорту на цей тиждень не було) — приймаємо спір як раніше.
+    // рапорт тижня ще не поданий (рядок створює понеділковий запит; якщо запиту не було — рядка нема) → спершу рапорт
     const [rep] = await db.select({ id: weeklyReportsTable.id, submittedAt: weeklyReportsTable.submittedAt }).from(weeklyReportsTable)
       .where(and(eq(weeklyReportsTable.workerId, worker.id), eq(weeklyReportsTable.factoryId, row.factoryId), eq(weeklyReportsTable.weekStart, ws))).limit(1);
-    if (rep && !rep.submittedAt) {
+    if (!rep?.submittedAt) {
       await ctx.answerCbQuery();
       return ctx.reply(t(lang, "fh.needReportWeek", { from: ddmm(ws), to: ddmm(weekEnd(ws)), factory: mdSafe(fac) }),
         { parse_mode: "Markdown", reply_markup: { inline_keyboard: [[{ text: t(lang, "fh.btnReport"), callback_data: `fhwr:${id}` }]] } });
@@ -182,9 +194,9 @@ export function registerFactoryHoursAck(bot: Telegraf, deps: FactoryHoursAckDeps
     const lang = asLang(worker?.language);
     const [row] = await db.select().from(factoryWeekHoursTable).where(eq(factoryWeekHoursTable.id, Number(ctx.match[1])));
     if (!row || !worker || row.workerId !== worker.id) return gone(ctx, lang);
-    const [rep] = await db.select({ id: weeklyReportsTable.id }).from(weeklyReportsTable)
-      .where(and(eq(weeklyReportsTable.workerId, worker.id), eq(weeklyReportsTable.factoryId, row.factoryId), eq(weeklyReportsTable.weekStart, String(row.weekStart)))).limit(1);
-    if (!rep) return gone(ctx, lang);
+    if (row.workerResponse != null) return answered(ctx, lang);
+    // рядок рапорту тижня створюємо, якщо понеділкового запиту на цей тиждень не було
+    const rep = await ensureWeeklyReport(worker.id, row.factoryId, String(row.weekStart));
     await ctx.answerCbQuery();
     await ctx.editMessageReplyMarkup(undefined).catch(() => {});
     return deps.startWeeklyReport(ctx, worker, lang, rep.id, { fhAckWeek: row.id });

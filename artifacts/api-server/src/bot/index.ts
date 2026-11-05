@@ -4924,6 +4924,14 @@ bot.on("text", async (ctx) => {
     const { data } = state;
     const rlang = asLang(data.lang);
     const hours = parseFloat(text.replace(",", ".").replace(/[^\d.]/g, ""));
+    // Рапорт здають у відповідь на «Є помилка» в годинах фабрики (fhAck), а людина там цього місяця
+    // не працювала: «0» — це і є її відповідь. Рапорту на 0 годин не буває (фото нема) — одразу спір.
+    if (data.fhAck && hours === 0) {
+      clearState(tid);
+      await ackAfterMonthlyReport(ctx, rlang, { fhId: Number(data.fhAck), workerId: data.workerId, reportHours: 0 });
+      const w0 = await getWorker(tid);
+      return ctx.reply(t(rlang, "fh.noteSaved"), w0 ? await workerMenuFor(w0, rlang) : leaverMenu(rlang));
+    }
     if (!isFinite(hours) || hours < 1 || hours > 400) {
       return ctx.reply(t(rlang, "report.badHours"));
     }
