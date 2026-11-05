@@ -137,7 +137,8 @@ export function registerWeeklyHours(bot: Telegraf, menuFor: MenuFor) {
   // Рядок на день: кнопки змін фабрики + «вих.»; одна зміна на день; за графіком уже відмічено,
   // тож більшість лише підтверджує. Далі тотал за тиждень текстом і фото рапорту.
   type DaySel = { shift: string | null; hours: number };
-  async function beginReport(ctx: Context, worker: WorkerLike, lang: Lang, rep: { id: number; factoryId: number; weekStart: string | Date }) {
+  // extra — довільні поля в стан діалогу (fhAckWeek: рапорт здають у відповідь на «Є помилка» в годинах фабрики)
+  async function beginReport(ctx: Context, worker: WorkerLike, lang: Lang, rep: { id: number; factoryId: number; weekStart: string | Date }, extra: Record<string, unknown> = {}) {
     const tid = String(ctx.from!.id);
     const weekStart = String(rep.weekStart);
     const { fac, rows } = await buildWeekRows(rep.factoryId, weekStart);
@@ -162,6 +163,7 @@ export function registerWeeklyHours(bot: Telegraf, menuFor: MenuFor) {
       } else days[date] = { shift: null, hours: 0 };
     }
     setState(tid, S_DAY, {
+      ...extra,
       repId: rep.id, workerId: worker.id, workerName: worker.fullName, factoryId: fac.id, factoryName: fac.name,
       weekStart, lang, days, shiftsByDate, msgId: null,
     });
@@ -221,12 +223,19 @@ export function registerWeeklyHours(bot: Telegraf, menuFor: MenuFor) {
     for (const date of weekDates(d.weekStart)) days[date] = d.days[date] ?? { shift: null, hours: 0 };
     await saveWeeklyReport(d.repId, { days, hoursReported, photoLink });
     const p = { from: ddmm(d.weekStart), to: ddmm(weekEnd(d.weekStart)), hours: hoursReported };
-    return ctx.reply(t(lang, hoursReported > 0 ? "wkr.saved" : "wkr.savedNoWork", p), { parse_mode: "Markdown", ...menu });
+    const sent = await ctx.reply(t(lang, hoursReported > 0 ? "wkr.saved" : "wkr.savedNoWork", p), { parse_mode: "Markdown", ...menu });
+    // рапорт здавали у відповідь на «Є помилка» в годинах фабрики за тиждень → розбіжність сама стає спором (#15)
+    if (d.fhAckWeek) {
+      const { ackAfterWeeklyReport } = await import("./factoryHoursAck");
+      await ackAfterWeeklyReport(ctx, lang, { fhwId: Number(d.fhAckWeek), workerId: d.workerId, hoursReported });
+    }
+    return sent;
   }
 
   bot.action(/^wkr:go:(\d+)$/, async (ctx) => {
     const tid = String(ctx.from.id);
-    const worker = await getWorker(tid);
+    // власник запиту — за telegram_id, активний чи вже звільнений (рапорт за відпрацьований тиждень здає й звільнений, #24)
+    const [worker] = await db.select().from(workersTable).where(eq(workersTable.telegramId, tid));
     const [rep] = await db.select().from(weeklyReportsTable).where(eq(weeklyReportsTable.id, Number(ctx.match[1])));
     if (!worker || !rep || rep.workerId !== worker.id) { await ctx.answerCbQuery(); return ctx.reply(t(asLang(worker?.language), "wkr.expired")); }
     await ctx.answerCbQuery();
@@ -325,6 +334,15 @@ export function registerWeeklyHours(bot: Telegraf, menuFor: MenuFor) {
     const doc = ctx.message.document;
     if (!(await onFile(ctx, doc.file_id, doc.mime_type ?? ""))) return next();
   });
+
+  return {
+    /** Почати рапорт тижня за id рядка weekly_reports (handlers/factoryHoursAck.ts — «спершу здай рапорт»). */
+    beginReportById: async (ctx: Context, worker: WorkerLike, lang: Lang, repId: number, extra: Record<string, unknown> = {}) => {
+      const [rep] = await db.select().from(weeklyReportsTable).where(eq(weeklyReportsTable.id, repId));
+      if (!rep || rep.workerId !== worker.id) { await ctx.reply(t(lang, "wkr.expired")); return; }
+      return beginReport(ctx, worker, lang, rep, extra);
+    },
+  };
 }
 
 export { Markup };

@@ -111,6 +111,7 @@ import { registerInvoiceScan } from "./handlers/invoiceScan";
 import { registerPassportScan } from "./handlers/passportScan";
 import { registerWorkerAbsences } from "./handlers/absences";
 import { registerWeeklyHours } from "./handlers/weeklyHours";
+import { registerFactoryHoursAck, ackAfterMonthlyReport, handleFhDisputeNote } from "./handlers/factoryHoursAck";
 import { registerTaskActions } from "./handlers/tasks";
 import { registerPracaGov } from "./handlers/pracaGov";
 import { registerFeedback } from "./handlers/feedback";
@@ -141,7 +142,13 @@ registerInvoiceScan(bot as any);
 registerPassportScan(bot as any);
 // «🚫 Мої пропуски» + пояснення пропуску з довідками — теж до загальних хендлерів
 registerWorkerAbsences(bot as any, workerMenuFor);
-registerWeeklyHours(bot as any, workerMenuFor); // тижневий облік: відмітки зміни + рапорт за тиждень (до загальних hears/on)
+const weeklyHours = registerWeeklyHours(bot as any, workerMenuFor); // тижневий облік: відмітки зміни + рапорт за тиждень (до загальних hears/on)
+// відповіді на запит «підтверди години фабрики» (кнопки; пояснення текстом — у загальному bot.on("text"))
+registerFactoryHoursAck(bot as any, {
+  menuFor: workerMenuFor,
+  startMonthlyReport: (ctx, tid, worker, month, lang, factoryId, extra) => startReportFlow(ctx, tid, worker, month, lang, factoryId, extra),
+  startWeeklyReport: (ctx, worker, lang, repId, extra) => weeklyHours.beginReportById(ctx, worker, lang, repId, extra),
+});
 registerRehire(bot as any, workerMenuFor);
 registerSignupLinks(bot as any);
 registerSmsCampaign(bot); // SMS-кампанії: ?start=sms<токен> + кнопки sms:*
@@ -1082,70 +1089,7 @@ bot.action(/^advfac:(\d+)$/, async (ctx) => {
   return ctx.reply(t(lang, "adv.askComment"));
 });
 
-// Відповідь працівника на запит «підтверди свої години фабрики» (розсилка з
-// /hours): ✅ — фіксуємо підтвердження; ❌ — фіксуємо помилку і просимо описати.
-bot.action(/^fh:(ok|no):(\d+)$/, async (ctx) => {
-  const tid = String(ctx.from.id);
-  const kind = (ctx as any).match[1] as "ok" | "no";
-  const fhId = Number((ctx as any).match[2]);
-  const worker = await getWorker(tid);
-  const lang = wlang(worker);
-  const [row] = await db.select().from(factoryHoursTable).where(eq(factoryHoursTable.id, fhId));
-  // рядок міг зникнути (очистка колонки/переімпорт) або належати не цій людині
-  if (!row || !worker || row.workerId !== worker.id) {
-    await ctx.answerCbQuery(t(lang, "fh.gone"));
-    await ctx.editMessageReplyMarkup(undefined).catch(() => {});
-    return;
-  }
-  const fac = (await db.select({ name: factoriesTable.name }).from(factoriesTable).where(eq(factoriesTable.id, row.factoryId)))[0];
-  const monthLabel = new Date(`${row.month}-01`).toLocaleDateString(DATE_LOCALE[lang], { month: "long", year: "numeric" });
-  if (kind === "ok") {
-    await db.update(factoryHoursTable)
-      .set({ workerResponse: "confirmed", workerResponseAt: new Date(), workerNote: null })
-      .where(eq(factoryHoursTable.id, fhId));
-    await ctx.answerCbQuery("✅");
-    await ctx.editMessageReplyMarkup(undefined).catch(() => {});
-    return ctx.reply(t(lang, "fh.confirmed", { hours: row.hours, factory: fac?.name ?? "—", month: monthLabel }), { parse_mode: "Markdown" });
-  }
-  await db.update(factoryHoursTable)
-    .set({ workerResponse: "dispute", workerResponseAt: new Date() })
-    .where(eq(factoryHoursTable.id, fhId));
-  await ctx.answerCbQuery();
-  await ctx.editMessageReplyMarkup(undefined).catch(() => {});
-  setState(tid, "fh:dispute_note", { fhId, lang });
-  return ctx.reply(t(lang, "fh.askNote"), cancelKb(lang));
-});
-
-// Те саме для ТИЖНЯ тижневої фабрики (factory_week_hours, 28.10.2026): fhw:ok|no:<id>
-bot.action(/^fhw:(ok|no):(\d+)$/, async (ctx) => {
-  const tid = String(ctx.from.id);
-  const kind = (ctx as any).match[1] as "ok" | "no";
-  const id = Number((ctx as any).match[2]);
-  const worker = await getWorker(tid);
-  const lang = wlang(worker);
-  const { factoryWeekHoursTable } = await import("@workspace/db");
-  const { setWeekAckResponse } = await import("../services/weeklyHours");
-  const { ddmm, weekEnd } = await import("../lib/weekMath");
-  const [row] = await db.select().from(factoryWeekHoursTable).where(eq(factoryWeekHoursTable.id, id));
-  if (!row || !worker || row.workerId !== worker.id) {
-    await ctx.answerCbQuery(t(lang, "fh.gone"));
-    await ctx.editMessageReplyMarkup(undefined).catch(() => {});
-    return;
-  }
-  const fac = (await db.select({ name: factoriesTable.name }).from(factoriesTable).where(eq(factoriesTable.id, row.factoryId)))[0];
-  const ws = String(row.weekStart);
-  if (kind === "ok") {
-    await setWeekAckResponse(id, "confirmed");
-    await ctx.answerCbQuery("✅");
-    await ctx.editMessageReplyMarkup(undefined).catch(() => {});
-    return ctx.reply(t(lang, "fh.confirmedWeek", { hours: row.hours, factory: mdSafe(fac?.name ?? "—"), from: ddmm(ws), to: ddmm(weekEnd(ws)) }), { parse_mode: "Markdown" });
-  }
-  await setWeekAckResponse(id, "dispute");
-  await ctx.answerCbQuery();
-  await ctx.editMessageReplyMarkup(undefined).catch(() => {});
-  setState(tid, "fh:dispute_note", { fhId: id, lang, week: true });
-  return ctx.reply(t(lang, "fh.askNote"), cancelKb(lang));
-});
+// Відповіді на запит «підтверди свої години фабрики» (fh:* / fhw:*) — bot/handlers/factoryHoursAck.ts
 
 // Обʼєднання дубліката профілю — лише після ручного затвердження адміном
 // (кнопка під сповіщенням про самореєстрацію). keep = профіль офіса, drop = новий.
@@ -1676,14 +1620,16 @@ async function reportMonthFactories(worker: ReportWorker, reportMonth: string): 
 // Advance the report dialog for a concrete month: preset factory → straight to
 // hours; otherwise factories from the worker's approved shifts of that month
 // (a mid-month transfer yields two) + their current factory as a fallback.
-async function startReportFlow(ctx: Context, tid: string, worker: ReportWorker, reportMonth: string, lang: Lang, presetFactoryId?: number) {
+// extra — довільні поля в стан діалогу (їдуть до збереження рапорту): fhAck — рапорт здають з
+// підказки «спершу здай рапорт» на запит годин фабрики (handlers/factoryHoursAck.ts).
+async function startReportFlow(ctx: Context, tid: string, worker: ReportWorker, reportMonth: string, lang: Lang, presetFactoryId?: number, extra: Record<string, unknown> = {}) {
   const monthLabel = reportMonthLabel(lang, reportMonth);
 
   if (presetFactoryId) {
     const [pf] = await db.select({ id: factoriesTable.id, name: factoriesTable.name })
       .from(factoriesTable).where(eq(factoriesTable.id, presetFactoryId));
     if (pf?.name) {
-      return askReportHours(ctx, tid, { workerId: worker.id, workerName: worker.fullName, month: reportMonth, factory: pf.name, factoryId: pf.id, lang });
+      return askReportHours(ctx, tid, { ...extra, workerId: worker.id, workerName: worker.fullName, month: reportMonth, factory: pf.name, factoryId: pf.id, lang });
     }
   }
 
@@ -3610,6 +3556,8 @@ async function submitMonthlyReport(ctx: Context, tid: string, data: any, fileId:
       }
     }
     await ctx.reply(t(lang, "report.saved", { month: reportMonthLabel(lang, data.month), hours: data.reportHours }), { parse_mode: "Markdown", ...menu });
+    // рапорт здавали у відповідь на «Є помилка» в годинах фабрики → розбіжність сама стає спором (#15)
+    if (data.fhAck) await ackAfterMonthlyReport(ctx, lang, { fhId: Number(data.fhAck), workerId: data.workerId, reportHours: Number(data.reportHours) });
     // Мульти-фабричний місяць (переведення/разова підміна): одразу запропонувати
     // рапорти, яких ще бракує — інакше людина вважає, що здала все.
     try {
@@ -4697,42 +4645,8 @@ bot.on("text", async (ctx) => {
     return ctx.reply(tb(bl, "На фабриці {factory} такого не знайшов. Що робимо?", { factory: facName }), { reply_markup: notFoundKb("brd", bl) });
   }
 
-  // Пояснення помилки в годинах фабрики (після ❌ у запиті підтвердження)
-  if (state?.action === "fh:dispute_note") {
-    const lang = asLang(state.data.lang);
-    clearState(tid);
-    const note = text.trim().slice(0, 500);
-    const worker = await getWorker(tid);
-    // тижнева фабрика: рядок factory_week_hours (пояснення → офісу тим самим сповіщенням, з тижнем замість місяця)
-    if (state.data.week) {
-      const { factoryWeekHoursTable } = await import("@workspace/db");
-      const { setWeekAckResponse } = await import("../services/weeklyHours");
-      const { weekLabel } = await import("../lib/weekMath");
-      const [wrow] = await db.select().from(factoryWeekHoursTable).where(eq(factoryWeekHoursTable.id, Number(state.data.fhId)));
-      if (wrow && worker && wrow.workerId === worker.id) {
-        await setWeekAckResponse(wrow.id, "dispute", note);
-        const fac = (await db.select({ name: factoriesTable.name }).from(factoriesTable).where(eq(factoriesTable.id, wrow.factoryId)))[0];
-        const period = `тиждень ${weekLabel(String(wrow.weekStart))}`;
-        await notifyAdmins("hours_correction",
-          `⚠️ *Помилка в годинах фабрики*\n\n👷 *${mdSafe(worker.fullName)}*\n🏭 ${mdSafe(fac?.name ?? "—")} · ${period}\n🕒 Наші години: *${wrow.hours}*\n📝 ${mdSafe(note)}`,
-          { parse_mode: "Markdown" },
-        );
-        await notifyRoles("scheduler", { type: "hours_correction", adminsNotified: true, title: `⚠️ Помилка в годинах фабрики: ${worker.fullName}`, body: `${fac?.name ?? "—"} · ${period} · наші ${wrow.hours} год · ${note}` });
-      }
-      return ctx.reply(t(lang, "fh.noteSaved"), await workerMenuFor(worker, lang));
-    }
-    const [row] = await db.select().from(factoryHoursTable).where(eq(factoryHoursTable.id, Number(state.data.fhId)));
-    if (row && worker && row.workerId === worker.id) {
-      await db.update(factoryHoursTable).set({ workerNote: note }).where(eq(factoryHoursTable.id, row.id));
-      const fac = (await db.select({ name: factoriesTable.name }).from(factoriesTable).where(eq(factoriesTable.id, row.factoryId)))[0];
-      await notifyAdmins("hours_correction",
-        `⚠️ *Помилка в годинах фабрики*\n\n👷 *${mdSafe(worker.fullName)}*\n🏭 ${mdSafe(fac?.name ?? "—")} · ${row.month}\n🕒 Наші години: *${row.hours}*\n📝 ${mdSafe(note)}`,
-        { parse_mode: "Markdown" },
-      );
-      await notifyRoles("scheduler", { type: "hours_correction", adminsNotified: true, title: `⚠️ Помилка в годинах фабрики: ${worker.fullName}`, body: `${fac?.name ?? "—"} · ${row.month} · наші ${row.hours} год · ${note}` });
-    }
-    return ctx.reply(t(lang, "fh.noteSaved"), await workerMenuFor(worker, lang));
-  }
+  // Пояснення помилки в годинах фабрики (після ❌ у запиті підтвердження) — handlers/factoryHoursAck.ts
+  if (state?.action === "fh:dispute_note") return handleFhDisputeNote(ctx, tid, state, text, workerMenuFor);
 
   if (state?.action === "advance:enter_amount") {
     const lang = asLang(state.data.lang);
