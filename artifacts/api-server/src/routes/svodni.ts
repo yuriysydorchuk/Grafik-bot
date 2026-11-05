@@ -2367,7 +2367,7 @@ router.delete("/svodni/profile-change/:id", requireCap("svodni"), async (req: Au
   if (!Number.isFinite(id)) return fail(res, 400, "bad id");
   const [entry] = await db.select().from(workerChangesTable).where(eq(workerChangesTable.id, id));
   if (!entry) return fail(res, 404, "запис не знайдено");
-  if (["fired", "restored"].includes(entry.field))
+  if (["fired", "restored", "fireUndone"].includes(entry.field))
     return fail(res, 400, "звільнення/поновлення скасовуються кнопками профілю");
   if (entry.field === "merged") return fail(res, 400, "обʼєднання профілів не відкочується");
   if (entry.field === "fireDate") return fail(res, 400, "дата звільнення правиться в профілі");

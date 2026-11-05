@@ -222,7 +222,38 @@ export async function syncUaNotificationTasks(today = warsawToday()): Promise<{ 
   return stats;
 }
 
-// Ступінь 1 → 2: вислати людину/всіх до powiadomienia.
+// Вихід людини під сумнівом — зголошення #19: перший робочий день ставиться і з розісланої зміни БЕЗ
+// відмітки явки, тож у списку ступеня 1 бувають люди, які на зміну так і не вийшли; подавати на них
+// powiadomienie рано. Повертає тих, чий вихід ПІДТВЕРДЖЕНО: є явка (present) або день у файлі годин
+// фабрики від дати початку рядка; або сумніватись нема в чому — жодної минулої розісланої зміни без
+// явки (перший день вписано вручну / фабрика без графіку). «Вислати всіх» бере лише підтверджених.
+export async function uaAttended(rows: { id: number; start?: string | null }[], today = warsawToday()): Promise<Set<number>> {
+  const ids = [...new Set(rows.map(r => r.id))];
+  const out = new Set<number>(ids);
+  if (!ids.length) return out;
+  const { scheduleEntriesTable, scheduleWeeksTable, factoryHoursTable } = await import("@workspace/db");
+  const { entryDateStr } = await import("../lib/dates");
+  const startOf = new Map(rows.map(r => [r.id, r.start ?? null]));
+  const from = (id: number, d: string) => { const s = startOf.get(id); return !s || d >= s; };
+  const ents = await db.select({ workerId: scheduleEntriesTable.workerId, status: scheduleEntriesTable.status, sentAt: scheduleEntriesTable.sentAt, day: scheduleEntriesTable.dayOfWeek, weekStart: scheduleWeeksTable.weekStart })
+    .from(scheduleEntriesTable).innerJoin(scheduleWeeksTable, eq(scheduleEntriesTable.weekId, scheduleWeeksTable.id))
+    .where(and(inArray(scheduleEntriesTable.workerId, ids), inArray(scheduleEntriesTable.status, ["present", "scheduled"])));
+  const present = new Set<number>(), doubt = new Set<number>();
+  for (const e of ents) {
+    if (e.workerId == null) continue;
+    const d = entryDateStr(String(e.weekStart), e.day);
+    if (!from(e.workerId, d)) continue;
+    if (e.status === "present") present.add(e.workerId);
+    else if (e.sentAt && d < today) doubt.add(e.workerId); // розіслана минула зміна без явки
+  }
+  const fh = await db.select({ workerId: factoryHoursTable.workerId, days: factoryHoursTable.days }).from(factoryHoursTable).where(inArray(factoryHoursTable.workerId, ids));
+  for (const h of fh) for (const d of Object.keys((h.days ?? {}) as Record<string, unknown>)) if (/^\d{4}-\d{2}-\d{2}$/.test(d) && from(h.workerId, d)) present.add(h.workerId);
+  for (const id of doubt) if (!present.has(id)) out.delete(id);
+  return out;
+}
+
+// Ступінь 1 → 2: вислати людину/всіх до powiadomienia. «Усіх» = лише з підтвердженим виходом
+// (явка від дати початку); людину без явки можна вислати тільки поіменно — свідомо.
 export async function uaSend(task: Task, workerId: number | null, actor: { adminId: number; name?: string | null }): Promise<string> {
   if (!isUa(task) || paramsOf(task).stage !== 1) throw new Error("Це не задача ступеня 1");
   const today = warsawToday();
@@ -231,8 +262,10 @@ export async function uaSend(task: Task, workerId: number | null, actor: { admin
   const cur = paramsOf(task).workers;
   // «Вислати всіх» не бере тих, кого графікова вже подала сама («Подано» в ступені 1) — інакше ступінь 2
   // отримав би людину, яку вже подано (подвійна подача); такі лишаються тут до підтвердження
-  const move = workerId ? cur.filter(w => w.id === workerId) : cur.filter(w => !w.submittedAt);
-  if (!move.length) throw new Error(workerId ? "Людину в списку не знайдено" : "Усіх у списку вже подано — лишилось додати підтвердження");
+  const attended = workerId ? null : await uaAttended(cur);
+  const move = workerId ? cur.filter(w => w.id === workerId) : cur.filter(w => !w.submittedAt && attended!.has(w.id));
+  const heldBack = workerId ? 0 : cur.filter(w => !w.submittedAt && !attended!.has(w.id)).length;
+  if (!move.length) throw new Error(workerId ? "Людину в списку не знайдено" : heldBack ? `У списку лише люди без підтвердженого виходу (${heldBack}) — відмітьте явку в графіку або вишліть поіменно` : "Усіх у списку вже подано — лишилось додати підтвердження");
   const rest = cur.filter(w => !move.some(m => uaKey(m) === uaKey(w)));
   const stamped = move.map(w => ({ ...w, sentAt: new Date().toISOString(), sentBy: actor.adminId }));
   const to = await stage2Assignee(rule);
@@ -245,7 +278,7 @@ export async function uaSend(task: Task, workerId: number | null, actor: { admin
   await logTaskEvent(t2.id, "comment", actor.adminId, { system: true, text: `${actor.name ?? "Офіс"} вислав(ла) до powiadomienia: ${stamped.map(w => w.name).join(", ")}` }).catch(() => {});
   if (to) await notifyAdminById(to, "tasks", `🪪 *Podać powiadomienie* — від ${mdEsc(actor.name ?? "офісу")}:\n${stamped.map(w => `• ${withCo(w)}${w.factoryName ? ` · ${mdEsc(w.factoryName)}` : ""} · до ${fmtDate(w.dueAt)}`).join("\n")}`,
     { parse_mode: "Markdown", reply_markup: { inline_keyboard: [[...(taskPanelUrl() ? [{ text: "🔗 Відкрити задачу", url: `${taskPanelUrl()}/tasks?task=${t2.id}` }] : [])]] } }).catch(() => {});
-  return workerId ? `${stamped[0]!.name} → задача «${t2.title}» (${await adminName(to)})` : `${stamped.length} ос. → задача «${t2.title}» (${await adminName(to)})`;
+  return workerId ? `${stamped[0]!.name} → задача «${t2.title}» (${await adminName(to)})` : `${stamped.length} ос. → задача «${t2.title}» (${await adminName(to)})${heldBack ? ` · без підтвердженого виходу лишилось: ${heldBack}` : ""}`;
 }
 
 // «Подано» руками (до появи підтвердження) — у ступені 2 або графіковою, що подає сама (ступінь 1).
@@ -299,6 +332,7 @@ export async function uaInsertConfirmationDoc(workerId: number, file: { relPath:
 
 // ── Контекст для «Як вирішити» ────────────────────────────────────────────────
 export interface UaContextRow extends UaWorker {
+  attended: boolean; // вихід підтверджено явкою (uaAttended) — без цього «Вислати всіх» людину не бере
   daysLeft: number; missing: string[]; docId: number | null; docFileUrl: string | null; nationality: string | null;
   steps: { data: boolean; submitted: boolean; entered: boolean };
 }
@@ -318,12 +352,13 @@ export async function uaContext(task: Task): Promise<{ stage: 1 | 2; rows: UaCon
     const r = restored.get(d.workerId); const at = dateStr(d.submittedAt) ?? dateStr(d.validFrom) ?? dateStr(d.issuedAt);
     return !r || !at || at >= r;
   };
+  const attended = await uaAttended(p.workers);
   for (const w of p.workers) {
     // документ рахується для рядка лише коли виданий саме на його фірму (як у движку employerOk==="ok";
     // документ без фірми = «роботодавець невідомий», обовʼязок не закриває); старий рядок без фірми — будь-який
     const doc = docs.find(d => d.workerId === w.id && d.status !== "missing" && (w.companyId == null || d.employerCompanyId === w.companyId) && fromThisHire(d));
     const missing = (await uaCard(w.id, w.companyId ?? null)).missing; // обидві ступені: графікова теж може подати сама
-    rows.push({ ...w, daysLeft: diffDays(w.dueAt, today), missing, docId: doc?.id ?? null, docFileUrl: doc?.filePath ? `/api/worker-documents/${doc.id}/file` : null, nationality: ws.find(x => x.id === w.id)?.nationality ?? null,
+    rows.push({ ...w, attended: attended.has(w.id), daysLeft: diffDays(w.dueAt, today), missing, docId: doc?.id ?? null, docFileUrl: doc?.filePath ? `/api/worker-documents/${doc.id}/file` : null, nationality: ws.find(x => x.id === w.id)?.nationality ?? null,
       steps: { data: !missing.length, submitted: !!w.submittedAt || !!doc, entered: !!doc } });
   }
   return { stage: p.stage, rows };

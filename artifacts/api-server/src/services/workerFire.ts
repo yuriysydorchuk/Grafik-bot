@@ -115,8 +115,13 @@ export async function fireWorker(opts: FireOpts): Promise<FireResult> {
 
   // чинні умови закриваються датою звільнення (date_to порожнє або пізніше за дату) — саме вони
   // «раніше кінця» → wypowiedzenie від працівника (terminationFlow → contractEndDocs)
+  // _closedByFire / _dateToBeforeFire — щоб «звільнили помилково» (workerRehire, зголошення #19) могло
+  // повернути умові її справжній кінець, а не лишити її закритою датою звільнення
   const closed = await db.update(contractsTable)
-    .set({ dateTo: fireDate, updatedAt: new Date() })
+    .set({
+      dateTo: fireDate, updatedAt: new Date(),
+      data: sql`coalesce(${contractsTable.data}, '{}'::jsonb) || jsonb_build_object('_closedByFire', ${fireDate}::text, '_dateToBeforeFire', ${contractsTable.dateTo}::text)`,
+    })
     .where(and(eq(contractsTable.workerId, w.id), eq(contractsTable.status, "signed"), or(isNull(contractsTable.dateTo), gt(contractsTable.dateTo, fireDate))))
     .returning({ id: contractsTable.id });
 

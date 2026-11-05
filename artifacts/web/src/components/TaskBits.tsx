@@ -741,6 +741,7 @@ function UaBlock({ taskId, ua, run, busy, inv }: { taskId: number; ua: { stage: 
             <Link href={`/workers/${r.id}`} className="font-medium text-slate-800 hover:text-red-600">{r.name}</Link>
             {r.companyName && <span className="rounded bg-violet-50 px-1.5 py-0.5 text-[10px] font-semibold text-violet-700" title={tr("Фірма-роботодавець, на яку подається powiadomienie")}>{r.companyName}</span>}
             {r.fired && <span className="rounded bg-rose-50 px-1.5 py-0.5 text-[10px] font-semibold text-rose-700" title={tr("Людину вже звільнено, але powiadomienie за початок праці все одно треба подати")}>{tr("звільнений")}</span>}
+            {ua.stage === 1 && r.attended === false && !r.submittedAt && <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700" title={tr("Зміну розіслано, але явку не відмічено — можливо, людина не вийшла. «Вислати всіх» її не бере.")}>{tr("вихід не підтверджено")}</span>}
             {r.factoryName && <span className="text-slate-400">{r.factoryName}</span>}
             <span className="text-slate-500">{tr("з")} {r.start ? fmtD(r.start) : "—"}</span>
             <span className={tone(r.daysLeft)}>{tr("до")} {fmtD(r.dueAt)}{r.daysLeft < 0 ? ` · −${-r.daysLeft} ${tr("дн.")}` : r.daysLeft === 0 ? ` · ${tr("сьогодні")}` : ` · ${r.daysLeft} ${tr("дн.")}`}</span>
@@ -755,7 +756,7 @@ function UaBlock({ taskId, ua, run, busy, inv }: { taskId: number; ua: { stage: 
               {!r.steps.entered && <button disabled={busy} onClick={() => run(`ua_submitted.${r.id}${r.companyId != null ? `.${r.companyId}` : ""}`)} className={cn("rounded-md border px-2 py-0.5", r.submittedAt ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-slate-200 bg-white hover:bg-slate-50")}>{r.submittedAt ? tr("подано ✓") : tr("Подано")}</button>}
               {canRobot && !r.steps.entered && <button title={tr("Переглянути анкету й заповнити форму PSZ-PPWPU на praca.gov.pl роботом")} onClick={() => setRobotQueue(queueOf([r]))} className="rounded-md border border-sky-300 bg-sky-50 px-2 py-0.5 font-semibold text-sky-800 hover:bg-sky-100">{tr("Автоматична подача")}</button>}
               {!r.steps.entered && <button onClick={() => setUploadFor(r)} className="rounded-md border border-violet-600 bg-violet-600 px-2 py-0.5 font-semibold text-white hover:bg-violet-700">{tr("Додати підтвердження")}</button>}
-              {ua.stage === 1 && !r.submittedAt && !r.steps.entered && <button disabled={busy} onClick={() => run(`ua_send.${r.id}`)} title={tr("Передати виконавцю ступеня 2 — подасть він")} className="rounded-md border border-violet-300 bg-white px-2 py-0.5 font-semibold text-violet-800 hover:bg-violet-50">{tr("Вислати")} →</button>}
+              {ua.stage === 1 && !r.submittedAt && !r.steps.entered && <button disabled={busy} onClick={() => { if (r.attended === false && !confirm(tr("У {name} вихід не підтверджено відміткою явки. Усе одно вислати до powiadomienia?", { name: r.name }))) return; run(`ua_send.${r.id}`); }} title={tr("Передати виконавцю ступеня 2 — подасть він")} className="rounded-md border border-violet-300 bg-white px-2 py-0.5 font-semibold text-violet-800 hover:bg-violet-50">{tr("Вислати")} →</button>}
             </span>
           </li>
         ))}

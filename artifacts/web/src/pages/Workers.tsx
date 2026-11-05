@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { Link } from "wouter";
+import { RestoreKindChoice, fireUndoText, type RestoreKind, type FireUndo } from "../components/RestoreKind";
 import { useSessionState } from "../lib/nav";
 import { matchesQuery } from "../components/SearchBox";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -67,7 +68,12 @@ export default function Workers() {
     onSuccess: (r) => { invalidate(); setFiring(null); toast.success(t("Працівника звільнено"), { description: r?.reportOffered ? t("Пропозицію здати рапорт надіслано в бот") : undefined }); },
     onError: (e: any) => toast.error(e.message),
   });
-  const restore = useMutation({ mutationFn: (id: number) => post(`/workers/${id}/restore`), onSuccess: () => { invalidate(); toast.success(t("Відновлено")); } });
+  const restore = useMutation({
+    mutationFn: (v: { id: number; mistaken: boolean }) => post<{ undo?: FireUndo | null }>(`/workers/${v.id}/restore`, { mistaken: v.mistaken }),
+    onSuccess: (r) => { invalidate(); toast.success(t("Відновлено")); const u = fireUndoText(t, r?.undo); if (u.ok) toast.success(u.ok); if (u.warn) toast.warning(u.warn, { duration: 12000 }); setRestoreAsk(null); },
+    onError: (e: any) => toast.error(e.message),
+  });
+  const [restoreAsk, setRestoreAsk] = useState<{ worker: Worker; kind: RestoreKind | null } | null>(null); // новий найм / помилкове звільнення (#19)
   const remove = useMutation({ mutationFn: (id: number) => del(`/workers/${id}`), onSuccess: () => { invalidate(); toast.success(t("Працівника видалено")); }, onError: (e: any) => toast.error(e.message) });
   const invite = useMutation({
     mutationFn: (id: number) => get<{ link: string }>(`/workers/${id}/invite`),
@@ -252,7 +258,7 @@ export default function Workers() {
                         ? <button onClick={() => setFiring(w)} className="rounded-lg p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600" title={t("Звільнити")}><UserX className="h-4 w-4" /></button>
                         : w.doNotHire
                           ? <span className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] font-semibold text-white" title={w.doNotHireReason ?? ""}>{t("не наймати")}</span>
-                          : <button onClick={() => restore.mutate(w.id)} className="rounded-lg p-1.5 text-slate-400 hover:bg-emerald-50 hover:text-emerald-600" title={t("Відновити")}><UserCheck className="h-4 w-4" /></button>)}
+                          : <button onClick={() => setRestoreAsk({ worker: w, kind: null })} className="rounded-lg p-1.5 text-slate-400 hover:bg-emerald-50 hover:text-emerald-600" title={t("Відновити")}><UserCheck className="h-4 w-4" /></button>)}
                       {canEdit && !w.isActive && isOwner && <button onClick={async () => { if (await confirm({ title: t("Видалити назавжди {name}?", { name: w.fullName }), message: t("Працівника та всю його історію буде видалено безповоротно."), danger: true, confirmText: t("Видалити") })) remove.mutate(w.id); }} className="rounded-lg p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600" title={t("Видалити назавжди")}><Trash2 className="h-4 w-4" /></button>}
                     </div>
                   </td>
@@ -267,6 +273,18 @@ export default function Workers() {
 
       {firing && <FireModal worker={firing} loading={fire.isPending} onClose={() => setFiring(null)} onFire={(offerReport, date) => fire.mutate({ id: firing.id, offerReport, date })} />}
 
+      {restoreAsk && (
+        <Modal open onClose={() => setRestoreAsk(null)} title={t("Відновити працівника?")}>
+          <div className="space-y-3">
+            <p className="text-sm text-slate-600"><b>{restoreAsk.worker.fullName}</b> — {t("Профіль знову стане активним, історія і документи збережуться.")}</p>
+            <RestoreKindChoice value={restoreAsk.kind} onChange={k => setRestoreAsk(s => s && { ...s, kind: k })} />
+            <div className="flex justify-end gap-2 pt-1">
+              <Button variant="secondary" onClick={() => setRestoreAsk(null)}>{t("Скасувати")}</Button>
+              <Button loading={restore.isPending} disabled={!restoreAsk.kind} onClick={() => restore.mutate({ id: restoreAsk.worker.id, mistaken: restoreAsk.kind === "mistaken" })}>{t("Відновити")}</Button>
+            </div>
+          </div>
+        </Modal>
+      )}
       {exporting && <WorkersExportModal onClose={() => setExporting(false)} initial={{ mode, factoryId: facFilter, companyId: coFilter, positionId: posFilter, q, picked: (workers ?? []).filter(w => selected.has(w.id)).map(w => ({ id: w.id, name: w.fullName })) }} />}
 
       {scanInviteLink && <ScanInviteModal link={scanInviteLink} onClose={() => setScanInviteLink(null)} />}

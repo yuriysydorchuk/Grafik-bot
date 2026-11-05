@@ -288,8 +288,10 @@ export async function buildTaskResolution(task: Task): Promise<{ context: TaskCo
       for (const k of ua.uaSatisfied(c.stage, c.rows)) satisfied.add(k);
       // подані графіковою самою («Подано») — не висилаються далі (дзеркало uaSend)
       const toSend = c.stage === 1 ? c.rows.filter(r => !r.submittedAt) : [];
+      // «усіх» = лише з підтвердженим виходом (явка); решта — поіменно зі списку, свідомо (зголошення #19)
+      const sure = toSend.filter(r => r.attended);
       if (toSend.length) {
-        actions.push({ code: "ua_send_all", label: `Вислати всіх (${toSend.length}) до powiadomienia`, kind: "api", primary: true, confirm: "Передати весь список виконавцю ступеня 2?" });
+        if (sure.length) actions.push({ code: "ua_send_all", label: sure.length === toSend.length ? `Вислати всіх (${sure.length}) до powiadomienia` : `Вислати з підтвердженим виходом (${sure.length} з ${toSend.length})`, kind: "api", primary: true, confirm: sure.length === toSend.length ? "Передати весь список виконавцю ступеня 2?" : "Передати виконавцю ступеня 2 лише людей з відміченою явкою? Решта лишиться в списку." });
         for (const r of toSend) actions.push({ code: `ua_send.${r.id}`, label: `Вислати: ${r.name}`, kind: "api", bot: false });
       }
       // картка/«подано» — і в ступені 2, і в ступені 1 (графікова може подати сама, 22.10.2026)

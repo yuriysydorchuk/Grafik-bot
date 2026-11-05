@@ -32,6 +32,7 @@ import {
   MISMATCH_LABEL, REQUIRED_MISSING_LABEL, NAT_GROUP_LABEL, reasonText, daysUntil,
 } from "../lib/legality";
 import { KzisInput } from "../components/KzisInput";
+import { RestoreKindChoice, fireUndoText, type RestoreKind, type FireUndo } from "../components/RestoreKind";
 import { fieldsFor, typeMatchesNationality, isEuNationality, type DocField, type DocFieldKey } from "../lib/documentFields";
 import { stayArticleOf } from "../lib/stayArticles";
 import { Button, Card, Spinner, Badge, Empty, Modal, Input, Select, Label, SearchableSelect, Textarea } from "../components/ui";
@@ -210,8 +211,9 @@ export default function WorkerDetail() {
   });
   const [restoring, setRestoring] = useState(false);
   const restore = useMutation({
-    mutationFn: (p: { factoryId: number | null; force: boolean }) => post(`/workers/${id}/restore`, p),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["worker", id] }); qc.invalidateQueries({ queryKey: ["workers"] }); qc.invalidateQueries({ queryKey: ["worker-changes"] }); qc.invalidateQueries({ queryKey: ["worker-factories", id] }); setRestoring(false); toast.success(t("Відновлено")); },
+    mutationFn: (p: { factoryId: number | null; force: boolean; mistaken: boolean }) => post<{ undo?: FireUndo | null }>(`/workers/${id}/restore`, p),
+    onSuccess: (r) => {
+      { const u = fireUndoText(t, r?.undo); if (u.ok) toast.success(u.ok); if (u.warn) toast.warning(u.warn, { duration: 12000 }); qc.invalidateQueries({ queryKey: ["worker-contracts"] }); qc.invalidateQueries({ queryKey: ["tasks"] }); } qc.invalidateQueries({ queryKey: ["worker", id] }); qc.invalidateQueries({ queryKey: ["workers"] }); qc.invalidateQueries({ queryKey: ["worker-changes"] }); qc.invalidateQueries({ queryKey: ["worker-factories", id] }); setRestoring(false); toast.success(t("Відновлено")); },
     onError: (e: any) => toast.error(e.message),
   });
   // зміна з датою набуття: свод-релевантні поля відкривають модалку «від коли +
@@ -622,7 +624,7 @@ export default function WorkerDetail() {
         </Modal>
       )}
       {firing && <FireModal worker={{ fullName: w.fullName, telegramId: w.telegramId }} loading={fire.isPending} onClose={() => setFiring(false)} onFire={(offerReport, date) => fire.mutate({ offerReport, date })} />}
-      {restoring && <RestoreWorkerModal worker={w} factories={factories} loading={restore.isPending} onClose={() => setRestoring(false)} onRestore={(factoryId, force) => restore.mutate({ factoryId, force })} />}
+      {restoring && <RestoreWorkerModal worker={w} factories={factories} loading={restore.isPending} onClose={() => setRestoring(false)} onRestore={(factoryId, force, mistaken) => restore.mutate({ factoryId, force, mistaken })} />}
       {merging && <MergeWorkerModal worker={{ id: w.id, fullName: w.fullName }} onClose={() => setMerging(false)} />}
       {blacklisting && (
         <Modal open onClose={() => setBlacklisting(false)} title={t("У чорний список")}>
@@ -1380,9 +1382,10 @@ function StandardPackageRow({ workerId, list, onSaved, onGenerate, onImport }: {
 // рядок додаткової, щоб основна й додаткова не збігались.
 function RestoreWorkerModal({ worker, factories, loading, onClose, onRestore }: {
   worker: { id: number; fullName: string; factoryId: number | null; doNotHire?: boolean; doNotHireReason?: string | null };
-  factories: Factory[]; loading: boolean; onClose: () => void; onRestore: (factoryId: number | null, force: boolean) => void;
+  factories: Factory[]; loading: boolean; onClose: () => void; onRestore: (factoryId: number | null, force: boolean, mistaken: boolean) => void;
 }) {
   const t = useT();
+  const [kind, setKind] = useState<RestoreKind | null>(null); // новий найм / звільнили помилково — питаємо щоразу (#19)
   const today = new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Warsaw" });
   const { data: extra = [], isLoading } = useQuery<WorkerFactory[]>({ queryKey: ["worker-factories", worker.id], queryFn: () => get(`/workers/${worker.id}/factories`) });
   const live = extra.filter(r => !r.validTo || r.validTo >= today);
@@ -1407,9 +1410,10 @@ function RestoreWorkerModal({ worker, factories, loading, onClose, onRestore }: 
             <p className="mt-1 text-xs text-slate-500">{t("Звільнено з {old}; у профілі вже є додаткова фабрика — пропонуємо її основною.", { old: oldName ?? "—" })}</p>
           )}
         </div>
+        <RestoreKindChoice value={kind} onChange={setKind} />
         <div className="flex justify-end gap-2 pt-1">
           <Button variant="secondary" onClick={onClose}>{t("Скасувати")}</Button>
-          <Button variant={worker.doNotHire ? "danger" : "primary"} loading={loading} disabled={isLoading} onClick={() => onRestore(factoryId ? Number(factoryId) : null, !!worker.doNotHire)}>
+          <Button variant={worker.doNotHire ? "danger" : "primary"} loading={loading} disabled={isLoading || !kind} onClick={() => onRestore(factoryId ? Number(factoryId) : null, !!worker.doNotHire, kind === "mistaken")}>
             <UserCheck className="h-4 w-4" /> {worker.doNotHire ? t("Повернути") : t("Відновити")}
           </Button>
         </div>
@@ -4800,7 +4804,7 @@ function ChangesTimeline({ workerId, canUndo }: { workerId: number; canUndo?: bo
             {!!c.skippedLocked?.length && <span className="rounded bg-amber-50 px-1.5 text-xs text-amber-700">🔒 {c.skippedLocked.map(s => s.month).join(", ")}</span>}
             <span className="ml-auto flex shrink-0 items-center gap-2 text-xs text-slate-400">
               {c.adminName ?? (isQField(c.field) ? t("працівник") : "—")} · {new Date(c.createdAt).toLocaleDateString("uk-UA")}
-              {canUndo && !isQField(c.field) && !["fired", "restored", "selfTransport", "merged", "fireDate"].includes(c.field) && (
+              {canUndo && !isQField(c.field) && !["fired", "restored", "fireUndone", "selfTransport", "merged", "fireDate"].includes(c.field) && (
                 <button type="button"
                   title={t("Видалити зміну: значення повернеться до попереднього, сводні перерахуються, запис зникне з історії")}
                   onClick={async () => {

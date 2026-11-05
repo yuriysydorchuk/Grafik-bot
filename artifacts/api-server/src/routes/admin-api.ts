@@ -924,10 +924,11 @@ router.post("/workers/:id/restore", LIFECYCLE, async (req, res) => {
   const { restoreWorker } = await import("../services/workerRehire");
   // force = свідоме повернення людини з чорного списку; лише той, хто може видаляти працівників
   const force = b.force === true && hasCap((req as AuthedRequest).admin?.role, (req as AuthedRequest).admin?.caps, "deleteWorkers");
-  const r = await restoreWorker({ workerId: id, factoryId: optId(b.factoryId), positionId: optId(b.positionId), adminId: (req as AuthedRequest).admin?.adminId ?? null, force });
+  // mistaken — «звільнили помилково»: не новий найм (перший день і powiadomienie чинні), наслідки звільнення — назад
+  const r = await restoreWorker({ workerId: id, factoryId: optId(b.factoryId), positionId: optId(b.positionId), adminId: (req as AuthedRequest).admin?.adminId ?? null, force, mistaken: b.mistaken === true });
   if (!r.ok) return fail(res, 400, r.error);
   if (r.clearedRehire) await notifyRestoredInBot(r.worker);
-  ok(res, stripWorkerEcho(r.worker, req));
+  ok(res, { ...stripWorkerEcho(r.worker, req), undo: r.undo ?? null });
 });
 
 // Людина чекала відповіді на заявку з бота (клавіатуру тоді прибрали) — кажемо, що відновлено,
