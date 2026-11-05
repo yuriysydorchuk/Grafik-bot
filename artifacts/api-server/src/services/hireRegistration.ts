@@ -60,7 +60,7 @@ export async function zusRegistrationTypeIds(): Promise<number[]> {
 // зголошення, і задача закривається саме ним (пари — services/zusPairs.ts, зголошення #16).
 async function zuaDocs(workerId: number) {
   const { loadZusPairs, openRegistrations } = await import("./zusPairs");
-  return openRegistrations(await loadZusPairs(workerId), null).map(r => ({ id: r.id, companyId: r.state.companyId, date: r.date }));
+  return openRegistrations(await loadZusPairs(workerId), null).map(r => ({ id: r.id, companyId: r.companyId, date: r.date })); // фірма з самого документа: без фірми — підходить будь-якій
 }
 
 // Чинні (підписані працівником або обома) умови-umowa працівника з цією фірмою — для «ще є що зголошувати».
