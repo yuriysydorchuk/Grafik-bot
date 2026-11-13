@@ -12,6 +12,7 @@ import { RecipientsPicker } from "../components/RecipientsPicker";
 import { useMe } from "../lib/hooks";
 import { can } from "../lib/roles";
 import { ReportRetakeButton } from "../components/ReportRetake";
+import { ReportPhotoUpload } from "../components/ReportPhotoUpload";
 import { useT, useLang } from "../lib/i18n";
 import { useOrderPref, orderBy, useDragOrder, mergeVisibleOrder } from "../lib/prefs";
 import { FIRM_TAB } from "../lib/colors";
@@ -2172,6 +2173,8 @@ function ReportHoursCell({ w, month, canEdit, retake }: { w: HourRow; month: str
       <button onClick={() => { setVal(w.reportHours != null ? String(w.reportHours) : ""); setEditing(true); }} className="rounded-md p-0.5 text-slate-300 hover:text-red-600" title={t("Вписати години")}><Pencil className="h-3.5 w-3.5" /></button>
       {/* фото неповне → повернути на перезйомку (#32); тижнева фабрика — з вкладки тижня */}
       {retake && w.reportSubmitted && w.reportLink && w.factoryId != null && <ReportRetakeButton workerId={w.workerId} factoryId={w.factoryId} month={month} title={`${w.name} · ${month}`} />}
+      {/* фото рапорту з панелі (#37) — лише до вже вписаних годин; тижнева фабрика — з вкладки тижня */}
+      {retake && w.reportSubmitted && w.factoryId != null && <ReportPhotoUpload workerId={w.workerId} factoryId={w.factoryId} month={month} onDone={() => { qc.invalidateQueries({ queryKey: ["hours", month] }); }} />}
     </span>
   );
 }

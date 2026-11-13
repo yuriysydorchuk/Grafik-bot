@@ -1703,6 +1703,12 @@ function ContractRow({ c, workerId, onSaved, newVersion, archived, showTarget }:
   const isEventDoc = isEvent;
   const clearTerm = useMutation({ mutationFn: () => del(`/contracts/${c.id}/termination`), onSuccess: () => { onSaved(); toast.success(t("Виповідзення скасовано")); }, onError: (e: any) => toast.error(e.message) });
   const finalize = useMutation({ mutationFn: (id: number) => post(`/contracts/${id}/finalize`), onSuccess: () => { onSaved(); toast.success(t("Підписано від компанії — пакет завершено")); }, onError: (e: any) => toast.error(e.message) });
+  // підписати заново (#43): підписану умову анулюємо й шлемо той самий документ на підпис знову
+  const resign = useMutation({
+    mutationFn: (id: number) => post<{ notified: boolean; link: string | null }>(`/contracts/${id}/resign`),
+    onSuccess: r => { onSaved(); toast.success(r.notified ? t("Попередній підпис анульовано — новий лінк надіслано в Telegram") : t("Попередній підпис анульовано — лінк створено"), { description: !r.notified && r.link ? r.link : undefined }); },
+    onError: (e: any) => toast.error(e.message),
+  });
   const send = useMutation({
     mutationFn: (id: number) => post<{ notified: boolean; link: string | null; bundledCount: number }>(`/contracts/${id}/send`),
     onSuccess: r => {
@@ -1769,6 +1775,11 @@ function ContractRow({ c, workerId, onSaved, newVersion, archived, showTarget }:
           {!archived && c.status === "worker_signed" && (
             <button onClick={() => finalize.mutate(c.id)} disabled={finalize.isPending} className="rounded-md bg-emerald-50 px-2 py-1 text-xs font-medium text-emerald-700 hover:bg-emerald-100">{t("Підписати від компанії")}</button>
           )}
+          {!archived && ["worker_signed", "signed"].includes(c.status) && (
+            <button disabled={resign.isPending}
+              onClick={async () => { if (await confirm({ title: t("Підписати заново?"), message: t("Поточний підпис (і підпис фірми) анулюється, старий підписаний файл лишається в історії умови. Працівник отримає новий лінк на той самий документ; після його підпису фірма підписує, як і раніше."), danger: true, confirmText: t("Надіслати на новий підпис") })) resign.mutate(c.id); }}
+              className="rounded-md bg-amber-50 px-2 py-1 text-xs font-medium text-amber-800 hover:bg-amber-100" title={t("Підпис непридатний (крапочки, не та людина) — анулювати й підписати ще раз")}>{t("Підписати заново")}</button>
+          )}
           {!archived && !terminal && (
             <button onClick={async () => { if (await confirm({ title: t("Скасувати пакет?"), danger: true, confirmText: t("Скасувати") })) cancelMut.mutate(c.id); }}
               className="rounded p-1 text-slate-400 hover:bg-rose-50 hover:text-rose-600" title={t("Скасувати")}><Ban className="h-3.5 w-3.5" /></button>
@@ -1808,7 +1819,7 @@ function ContractRow({ c, workerId, onSaved, newVersion, archived, showTarget }:
 // «Запросити анкету» → лінк у бот (працівник вписує членів сам), офіс може правити вручну;
 // «Згенерувати ZCNA» → документ з печаткою на підпис + задача виконавцю ZUS.
 type FamilyMember = { id?: number; action: "zgloszenie" | "wyrejestrowanie"; rightsDate: string | null; pesel: string | null; docKind: string | null; docNumber: string | null; lastName: string; firstName: string; birthDate: string | null; relationCode: string; sharedHousehold: boolean; disabilityCode: string | null; addressDiffers: boolean; postalCode: string | null; city: string | null; gmina: string | null; street: string | null; houseNo: string | null; flatNo: string | null; phone: string | null; countryCode: string | null; foreignPostal: string | null; source?: string };
-type FamilyInfo = { members: FamilyMember[]; relationCodes: { code: string; pl: string }[]; disabilityCodes: { code: string; pl: string }[] };
+type FamilyInfo = { members: FamilyMember[]; zcna?: { contractId: number; fileId: number; status: string; signedAt: string | null; createdAt: string } | null; relationCodes: { code: string; pl: string }[]; disabilityCodes: { code: string; pl: string }[] };
 const blankMember = (): FamilyMember => ({ action: "zgloszenie", rightsDate: new Date().toLocaleDateString("sv-SE"), pesel: "", docKind: "", docNumber: "", lastName: "", firstName: "", birthDate: "", relationCode: "11", sharedHousehold: true, disabilityCode: "", addressDiffers: false, postalCode: "", city: "", gmina: "", street: "", houseNo: "", flatNo: "", phone: "", countryCode: "", foreignPostal: "" });
 
 function WorkerFamily({ workerId }: { workerId: number }) {
@@ -1822,6 +1833,11 @@ function WorkerFamily({ workerId }: { workerId: number }) {
   const save = useMutation({ mutationFn: (members: FamilyMember[]) => put(`/workers/${workerId}/family`, { members }), onSuccess: () => { toast.success(t("Збережено")); setEdit(null); inv(); }, onError: (e: any) => toast.error(e?.data?.index != null ? `${e.message}` : e.message) });
   const members = data?.members ?? [];
   const rel = (code: string) => data?.relationCodes.find(r => r.code === code)?.pl ?? code;
+  // документ ZCNA (умова kind zcna) — один файл на всіх членів родини; показуємо в блоці й у кожному рядку (#35)
+  const z = data?.zcna ?? null;
+  const zUrl = z ? `/api/contracts/${z.contractId}/files/${z.fileId}` : null;
+  const zLabel = z ? (z.status === "signed" ? t("підписано") : z.status === "worker_signed" ? t("підписав працівник") : z.status === "sent" ? t("на підписі") : z.status === "cancelled" ? t("скасовано") : z.status) : "";
+  const zDate = z ? new Date(z.signedAt ?? z.createdAt).toLocaleDateString("uk-UA") : "";
   return (
     <>
     <Section icon={Users} title={t("Родина (ZUS ZCNA)")} summary={members.length ? `${members.length}` : undefined} defaultOpen={members.length > 0}
@@ -1834,8 +1850,18 @@ function WorkerFamily({ workerId }: { workerId: number }) {
         <div className="px-5 py-3 text-sm text-slate-400">{t("Членів родини не вказано. Зголошення до ZUS робиться лише на прохання працівника — запросіть анкету або впишіть вручну.")}</div>
       ) : (
         <div className="overflow-x-auto px-5 py-2">
+          {z && zUrl && (
+            <div className="mb-2 flex flex-wrap items-center gap-2 rounded-lg bg-slate-50 px-3 py-1.5 text-xs text-slate-600">
+              <FileSignature className="h-3.5 w-3.5 text-slate-400" />
+              <span className="font-medium text-slate-700">{t("Документ ZCNA")}:</span>
+              <Badge color={z.status === "signed" ? "green" : z.status === "cancelled" ? "slate" : "amber"}>{zLabel}</Badge>
+              <span>{zDate}</span>
+              <a href={zUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-red-700 underline-offset-2 hover:underline"><ExternalLink className="h-3 w-3" /> {t("відкрити")}</a>
+              <span className="text-slate-400">· {t("один файл на всіх членів родини; подати до ZUS — задача виконавцю")}</span>
+            </div>
+          )}
           <table className="w-full text-sm">
-            <thead><tr className="text-left text-xs uppercase tracking-wide text-slate-400"><th className="py-1 pr-3">{t("Прізвище, імʼя")}</th><th className="py-1 pr-3">{t("Спорідненість")}</th><th className="py-1 pr-3">PESEL / {t("документ")}</th><th className="py-1 pr-3">{t("Дата нар.")}</th><th className="py-1 pr-3">{t("Дія")}</th><th className="py-1 pr-3">{t("Джерело")}</th></tr></thead>
+            <thead><tr className="text-left text-xs uppercase tracking-wide text-slate-400"><th className="py-1 pr-3">{t("Прізвище, імʼя")}</th><th className="py-1 pr-3">{t("Спорідненість")}</th><th className="py-1 pr-3">PESEL / {t("документ")}</th><th className="py-1 pr-3">{t("Дата нар.")}</th><th className="py-1 pr-3">{t("Дія")}</th><th className="py-1 pr-3">{t("Джерело")}</th><th className="py-1 pr-3">ZCNA</th></tr></thead>
             <tbody>
               {members.map(m => (
                 <tr key={m.id} className="border-t border-slate-100">
@@ -1845,6 +1871,7 @@ function WorkerFamily({ workerId }: { workerId: number }) {
                   <td className="py-1.5 pr-3 tabular-nums text-slate-600">{m.birthDate ?? "—"}</td>
                   <td className="py-1.5 pr-3 text-slate-600">{m.action === "wyrejestrowanie" ? t("виреєструвати") : t("зголосити")}{m.rightsDate ? ` · ${m.rightsDate}` : ""}</td>
                   <td className="py-1.5 pr-3 text-xs text-slate-400">{m.source === "office" ? t("офіс") : t("анкета")}</td>
+                  <td className="py-1.5 pr-3 text-xs">{z && zUrl ? <a href={zUrl} target="_blank" rel="noreferrer" title={`${t("Документ ZCNA")}: ${zLabel} · ${zDate}`} className={`inline-flex items-center gap-1 ${z.status === "signed" ? "text-emerald-700" : "text-amber-700"} underline-offset-2 hover:underline`}><FileSignature className="h-3.5 w-3.5" /> {zLabel}</a> : <span className="text-slate-300">—</span>}</td>
                 </tr>
               ))}
             </tbody>

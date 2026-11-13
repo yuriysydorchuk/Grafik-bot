@@ -3246,7 +3246,37 @@ router.get("/schedule", async (req, res) => {
     }
   }
 
-  ok(res, { week: week ? { id: week.id, weekStart: week.weekStart, status: week.status } : null, entries, reserve, available, approved, factory: factoryInfo, assignments, drivers, orders, orderReq, positions, unplanned, absenceByWorker, substituteFor, cancelledCells, shiftOverrides, workerNotes });
+  // «!» без умови (зголошення #45, 13.11.2026): людина в тижні без підписаної (працівником) умови на фабрику
+  // запису або її фірму, що покриває дати тижня — щоб графікова не поставила в графік того, хто ще не підписав.
+  // Подієві документи (zaświadczenie/wypowiedzenie/aneks/zcna) умовою не є. Резерв/вільні — по фабриці запиту.
+  const noContract: Record<number, true> = {};
+  {
+    const ids = new Set<number>();
+    for (const e of entries) ids.add(e.workerId);
+    for (const list of [...Object.values(reserve), ...Object.values(available)]) for (const w of list) ids.add(w.workerId);
+    if (ids.size) {
+      const weekEndStr = addDaysStr(weekStart, 6);
+      const cs = await db.select({ id: contractsTable.id, workerId: contractsTable.workerId, factoryId: contractsTable.factoryId, companyId: contractsTable.companyId, dateFrom: contractsTable.dateFrom, dateTo: contractsTable.dateTo })
+        .from(contractsTable).where(and(inArray(contractsTable.workerId, [...ids]), inArray(contractsTable.status, ["worker_signed", "signed"])));
+      const { eventContractIds } = await import("../services/contractEndDocs");
+      const ev = await eventContractIds(cs.map(c => c.id));
+      const facCompany = new Map((await db.select({ id: factoriesTable.id, companyId: factoriesTable.companyId }).from(factoriesTable)).map(f => [f.id, f.companyId]));
+      const d10 = (v: unknown) => v == null ? null : String(v).slice(0, 10);
+      const byWorker = new Map<number, typeof cs>();
+      for (const c of cs) if (!ev.has(c.id)) byWorker.set(c.workerId, [...(byWorker.get(c.workerId) ?? []), c]);
+      const covered = (workerId: number, facId: number) => (byWorker.get(workerId) ?? []).some(c => {
+        const from = d10(c.dateFrom), to = d10(c.dateTo);
+        if ((from && from > weekEndStr) || (to && to < weekStart)) return false;
+        const cCompany = c.companyId ?? (c.factoryId != null ? facCompany.get(c.factoryId) ?? null : null);
+        const fCompany = facCompany.get(facId) ?? null;
+        return c.factoryId === facId || (cCompany != null && cCompany === fCompany);
+      });
+      for (const e of entries) if (!covered(e.workerId, e.factoryId)) noContract[e.workerId] = true;
+      if (factoryId != null) for (const list of [...Object.values(reserve), ...Object.values(available)]) for (const w of list) if (!covered(w.workerId, factoryId)) noContract[w.workerId] = true;
+    }
+  }
+
+  ok(res, { week: week ? { id: week.id, weekStart: week.weekStart, status: week.status } : null, entries, reserve, available, approved, factory: factoryInfo, assignments, drivers, orders, orderReq, positions, unplanned, absenceByWorker, substituteFor, cancelledCells, shiftOverrides, workerNotes, noContract });
 });
 
 // Link a driver-typed unplanned worker to a real worker from the base.
@@ -4494,6 +4524,50 @@ router.post("/hours/report-retake", RW, async (req, res) => {
     });
   } catch (e) { logger.warn({ err: e, workerId }, "report retake request failed"); return fail(res, 502, "Не вдалося надіслати в бот (працівник міг заблокувати бота)"); }
   ok(res, { sent: true });
+});
+
+// Фото рапорту з панелі (зголошення #37, 13.11.2026): офіс завантажує фото/PDF рапорту сам — тим самим
+// хелпером, що й бот (`uploadReportPhoto`: PDF на Drive у папці місяця, повторне фото дописується сторінкою
+// в той самий файл). Потрібен уже вписаний рапорт (години) за місяць×фабрику або тиждень — фото без годин
+// у рядку обліку не має сенсу. multipart: file + workerId, factoryId, month | weekStart. Скоуп — у хендлері
+// (multipart парситься після гейта, як /hours/factory-parse).
+router.post("/hours/report-photo", RW, uploadDoc.single("file"), async (req, res) => {
+  const workerId = Number(req.body?.workerId), factoryId = Number(req.body?.factoryId);
+  const month = req.body?.month ? String(req.body.month) : null;
+  const weekStart = req.body?.weekStart ? String(req.body.weekStart) : null;
+  const file = (req as any).file as { buffer: Buffer; mimetype: string } | undefined;
+  if (!workerId || !factoryId) return fail(res, 400, "workerId та factoryId обовʼязкові");
+  if (!file) return fail(res, 400, "Потрібен файл (фото або PDF)");
+  if (!/^image\/|^application\/pdf$/.test(file.mimetype)) return fail(res, 400, "Лише фото або PDF");
+  if (scopeOf(req) && !factoryInScope(scopeOf(req), factoryId)) return fail(res, 403, "Фабрика поза вашим доступом");
+  const isMonday = !!weekStart && /^\d{4}-\d{2}-\d{2}$/.test(weekStart) && new Date(weekStart + "T00:00:00").getDay() === 1;
+  if (weekStart ? !isMonday : !(month && /^\d{4}-\d{2}$/.test(month))) return fail(res, 400, "Потрібен month=YYYY-MM або weekStart (понеділок)");
+  const [w] = await db.select({ fullName: workersTable.fullName }).from(workersTable).where(eq(workersTable.id, workerId));
+  const [fac] = await db.select({ name: factoriesTable.name, weeklyHours: factoriesTable.weeklyHours }).from(factoriesTable).where(eq(factoriesTable.id, factoryId));
+  if (!w || !fac) return fail(res, 404, "Працівника або фабрику не знайдено");
+  const { uploadReportPhoto } = await import("../services/drive");
+  try {
+    if (weekStart) {
+      const { isoMonthOfWeek, weekLabel } = await import("../lib/weekMath");
+      const [rep] = await db.select({ id: weeklyReportsTable.id, hoursReported: weeklyReportsTable.hoursReported, photoLink: weeklyReportsTable.photoLink }).from(weeklyReportsTable)
+        .where(and(eq(weeklyReportsTable.workerId, workerId), eq(weeklyReportsTable.factoryId, factoryId), eq(weeklyReportsTable.weekStart, weekStart)));
+      if (!rep || rep.hoursReported == null) return fail(res, 400, "Спершу впишіть години рапорту за тиждень");
+      const link = await uploadReportPhoto(fac.name, w.fullName, isoMonthOfWeek(weekStart), file.buffer, file.mimetype, rep.photoLink, `tydzień ${weekLabel(weekStart)}`);
+      if (!link) return fail(res, 502, "Не вдалося зберегти файл на Drive");
+      await db.update(weeklyReportsTable).set({ photoLink: link, updatedAt: new Date() }).where(eq(weeklyReportsTable.id, rep.id));
+      const { syncWeek } = await import("../services/weeklyHours");
+      await syncWeek(workerId, factoryId, weekStart);
+      return ok(res, { ok: true, link });
+    }
+    if (fac.weeklyHours) return fail(res, 400, "Фабрика з тижневим обліком — завантажте фото на вкладці тижня");
+    const [rep] = await db.select({ id: monthlyReportsTable.id, photoLink: monthlyReportsTable.photoLink }).from(monthlyReportsTable)
+      .where(and(eq(monthlyReportsTable.workerId, workerId), eq(monthlyReportsTable.month, month!), eq(monthlyReportsTable.factoryId, factoryId)));
+    if (!rep) return fail(res, 400, "Спершу впишіть години рапорту за місяць");
+    const link = await uploadReportPhoto(fac.name, w.fullName, month!, file.buffer, file.mimetype, rep.photoLink);
+    if (!link) return fail(res, 502, "Не вдалося зберегти файл на Drive");
+    await db.update(monthlyReportsTable).set({ photoLink: link }).where(eq(monthlyReportsTable.id, rep.id));
+    ok(res, { ok: true, link });
+  } catch (e) { logger.error({ err: e, workerId }, "report photo upload failed"); fail(res, 500, "Помилка завантаження"); }
 });
 
 // Ручна замітка рядка обліку годин — вільний текст графіка/офісу до пари

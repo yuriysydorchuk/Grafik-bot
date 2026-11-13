@@ -783,6 +783,20 @@ router.post("/contracts/:id/send", WD, async (req: AuthedRequest, res) => {
   }
 });
 
+// «Підписати заново» (зголошення #43, рішення власника 13.11.2026): працівник поставив крапочки замість
+// підпису — підписану умову анулюємо й шлемо той самий документ на підпис знову (services/contracts.ts resignContract).
+router.post("/contracts/:id/resign", WD, async (req: AuthedRequest, res) => {
+  const id = Number(req.params.id);
+  try {
+    const { resignContract } = await import("../services/contracts");
+    const r = await resignContract(id, req.admin?.adminId ?? null);
+    const [updated] = await db.select().from(contractsTable).where(eq(contractsTable.id, id));
+    ok(res, { ...updated, ...r });
+  } catch (e: any) {
+    fail(res, /не знайдено/i.test(e?.message ?? "") ? 404 : 400, e?.message ?? "Не вдалося надіслати на повторний підпис");
+  }
+});
+
 // Стрім PDF (unsigned — до підписання; signed зʼявляється після /sign/:token).
 router.get("/contracts/:id/files/:fileId", WD, async (req, res) => {
   const contractId = Number(req.params.id);
@@ -811,8 +825,8 @@ export default router;
 
 // ─── ZUS ZCNA — члени родини (рішення власника 10.09.2026, services/zcna.ts) ──────────────
 router.get("/workers/:id/family", WD, async (req, res) => {
-  const { listFamily, ZCNA_RELATION_CODES, ZCNA_DISABILITY_CODES } = await import("../services/zcna");
-  ok(res, { members: await listFamily(Number(req.params.id)), relationCodes: ZCNA_RELATION_CODES, disabilityCodes: ZCNA_DISABILITY_CODES });
+  const { listFamily, latestZcnaDoc, ZCNA_RELATION_CODES, ZCNA_DISABILITY_CODES } = await import("../services/zcna");
+  ok(res, { members: await listFamily(Number(req.params.id)), zcna: await latestZcnaDoc(Number(req.params.id)), relationCodes: ZCNA_RELATION_CODES, disabilityCodes: ZCNA_DISABILITY_CODES });
 });
 router.put("/workers/:id/family", WD, async (req, res) => {
   const members = Array.isArray(req.body?.members) ? req.body.members : null;

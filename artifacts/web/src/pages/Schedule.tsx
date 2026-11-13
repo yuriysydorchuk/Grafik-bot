@@ -40,6 +40,7 @@ type SchedResp = {
   cancelledCells: string[];
   shiftOverrides: Record<string, { start: string; end: string }>; // "day-shift" → разовий час зміни на цю дату
   workerNotes?: Record<number, string>; // примітка профілю (лише workerNote/svodniSensitive)
+  noContract?: Record<number, true>;    // без підписаної умови на фабрику/фірму на цей тиждень (#45)
 };
 type DragData =
   | { kind: "entry"; id: number; day: DayCode; shift: ShiftCode }
@@ -125,6 +126,7 @@ export default function Schedule() {
   const cancelledCells = new Set(data?.cancelledCells ?? []);
   const shiftOverrides = data?.shiftOverrides ?? {};
   const workerNotes = data?.workerNotes ?? {};
+  const noContract = data?.noContract ?? {};
   // з приміткою імʼя бере свою ширину, а примітка — решту (стискається до 📝), інакше імʼя тягнеться на всю
   const nameFlex = (id: number | null | undefined) => id != null && workerNotes[id] ? "flex-initial" : "flex-1";
   // A shift "has happened" once its start time has passed → show actuals, lock editing.
@@ -476,6 +478,8 @@ export default function Schedule() {
                           <div className="flex items-center gap-2">
                             <span className={`h-2.5 w-2.5 rounded-full ${shiftDot[shift]}`} />
                             <span className="text-xs font-medium text-slate-600">{SHIFT_UK[shift]}</span>
+                            {/* години зміни фабрики (#36); разовий час дня показує кнопка нижче */}
+                            {(() => { const st = factoryShiftsArr[Number(shift) - 1]; return st?.start && !shiftOverrides[`${day}-${shift}`] ? <span className="text-[10px] tabular-nums text-slate-400" title={t("Години зміни за налаштуванням фабрики")}>{st.start}–{st.end}</span> : null; })()}
                             {(() => {
                               const ovr = shiftOverrides[`${day}-${shift}`];
                               const isExtra = Number(shift) > shiftCount;
@@ -569,6 +573,7 @@ export default function Schedule() {
                                   {usesPositions && e.positionId != null && <span title={posName(e.positionId)} className={`h-2 w-2 shrink-0 rounded-full ${dotClass(posColor(e.positionId))}`} />}
                                   <Link href={profileHref(e.workerId)} className={`min-w-0 ${nameFlex(e.workerId)} truncate font-medium text-slate-700 hover:text-red-600 hover:underline`}>{e.workerName}</Link>
                                   <NoteChip note={workerNotes[e.workerId]} />
+                                  {noContract[e.workerId] && <NoContractMark />}
                                   {e.selfTransport && <span title={t("Доїжджає сам")} className="shrink-0 text-sky-500"><Car className="h-3.5 w-3.5" /></span>}
                                   {usesGender && e.gender && <span className={`shrink-0 text-xs font-semibold ${genderClass(e.gender)}`}>{genderIcon(e.gender)}</span>}
                                   {cellEditing ? (
@@ -649,6 +654,7 @@ export default function Schedule() {
                                   <Link href={profileHref(e.workerId)} draggable={false} onClick={ev => ev.stopPropagation()}
                                     className={`min-w-0 ${nameFlex(e.workerId)} truncate hover:underline ${off ? "text-rose-600 line-through decoration-rose-400" : restGap != null ? "text-orange-700" : "text-slate-700 hover:text-red-600"}`}>{e.workerName}</Link>
                                   <NoteChip note={workerNotes[e.workerId]} />
+                                  {noContract[e.workerId] && <NoContractMark />}
                                   {e.selfTransport && <span title={t("Доїжджає сам")} className="shrink-0 text-sky-500"><Car className="h-3.5 w-3.5" /></span>}
                                   {usesGender && e.gender && <span className={`shrink-0 text-xs font-semibold ${genderClass(e.gender)}`}>{genderIcon(e.gender)}</span>}
                                   {restGap != null && <span className="shrink-0 text-xs" title={restTip}>⚠️</span>}
@@ -675,6 +681,7 @@ export default function Schedule() {
                                   {usesPositions && r.positionId != null && <span title={posName(r.positionId)} className={`h-2 w-2 shrink-0 rounded-full ${dotClass(posColor(r.positionId))}`} />}
                                   <Link href={profileHref(r.workerId)} draggable={false} className={`min-w-0 ${nameFlex(r.workerId)} truncate text-slate-600 hover:text-red-600 hover:underline`}>{r.name}</Link>
                                   <NoteChip note={workerNotes[r.workerId]} />
+                                  {noContract[r.workerId] && <NoContractMark />}
                                   {usesGender && r.gender && <span className={`shrink-0 text-xs font-semibold ${genderClass(r.gender)}`}>{genderIcon(r.gender)}</span>}
                                   {editable && <button onClick={() => addEntry.mutate({ workerId: r.workerId, day, shift })} className="shrink-0 rounded px-1 text-xs text-emerald-600 hover:bg-emerald-50">+</button>}
                                 </div>
@@ -776,6 +783,7 @@ export default function Schedule() {
                     onClick={() => { addEntry.mutate({ workerId: w.id, day: addTo.day, shift: addTo.shift }); setAddTo(null); }}
                     className="flex w-full items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-left text-sm hover:border-red-300 hover:bg-red-50 disabled:opacity-50">
                     <span className="min-w-0 flex-1 truncate font-medium text-slate-700">{w.fullName}</span>
+                    {noContract[w.id] && <NoContractMark />}
                     {w.workerCode && <span className="shrink-0 font-mono text-xs text-slate-400">{w.workerCode}</span>}
                   </button>
                 ))}
@@ -851,6 +859,12 @@ export default function Schedule() {
 // зникає одразу (без паузи й без «переходу» на картку, прохання власника 22.10.2026).
 // У рядку займає місце між імʼям і значками справа (при довгому імені — лише 📝);
 // inline — для «пігулок» вільних працівників, де рядка на всю ширину нема.
+// «!» без підписаної умови на цю фабрику/фірму на тиждень (зголошення #45): дані — GET /schedule noContract
+function NoContractMark() {
+  const t = useT();
+  return <span title={t("Немає підписаної умови на цю фабрику (чи її фірму) на цей тиждень — людина ще не підписала через бот")} className="shrink-0 rounded-full bg-amber-100 px-1.5 text-[10px] font-bold leading-4 text-amber-700">!</span>;
+}
+
 function NoteChip({ note, inline }: { note?: string; inline?: boolean }) {
   const t = useT();
   const ref = useRef<HTMLSpanElement>(null); // сама плашка (truncate): обрізання, позиція, «тап поза»

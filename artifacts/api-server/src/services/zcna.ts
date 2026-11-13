@@ -8,7 +8,7 @@
 //      підпис працівнику (VII), після підпису фірма підписує автоматично; паралельно задача
 //      виконавцю ZUS (правило zcna_file, фолбек як у ZWUA): подати в Płatnik, внести
 //      підтвердження (тип zus_zcna) — задача закривається, коли документ зʼявився.
-import { db, workersTable, workerFamilyMembersTable, workerQuestionnairesTable, companiesTable, passportScanTokensTable, contractsTable, tasksTable, workerDocumentsTable, documentTypesTable } from "@workspace/db";
+import { db, workersTable, workerFamilyMembersTable, workerQuestionnairesTable, companiesTable, passportScanTokensTable, contractsTable, contractFilesTable, documentTemplatesTable, tasksTable, workerDocumentsTable, documentTypesTable } from "@workspace/db";
 import { and, eq, gt, inArray, ne, sql } from "drizzle-orm";
 import { randomInviteCode } from "../lib/invite";
 import { addDaysStr } from "../lib/dates";
@@ -78,6 +78,15 @@ export function validateMember(m: FamilyMemberInput): string | null {
 
 export async function listFamily(workerId: number) {
   return db.select().from(workerFamilyMembersTable).where(eq(workerFamilyMembersTable.workerId, workerId)).orderBy(workerFamilyMembersTable.id);
+}
+
+/** Останній документ ZCNA людини (умова kind='zcna') — для блоку «Родина» в профілі (зголошення #35). */
+export async function latestZcnaDoc(workerId: number): Promise<{ contractId: number; fileId: number; status: string; signedAt: Date | null; createdAt: Date } | null> {
+  const [row] = await db.select({ contractId: contractsTable.id, fileId: contractFilesTable.id, status: contractsTable.status, signedAt: contractsTable.companySignedAt, workerSignedAt: contractsTable.signedAt, createdAt: contractsTable.createdAt })
+    .from(contractsTable).innerJoin(contractFilesTable, eq(contractFilesTable.contractId, contractsTable.id))
+    .innerJoin(documentTemplatesTable, eq(contractFilesTable.templateId, documentTemplatesTable.id))
+    .where(and(eq(contractsTable.workerId, workerId), eq(documentTemplatesTable.kind, ZCNA_KIND))).orderBy(sql`${contractsTable.id} desc`).limit(1);
+  return row ? { contractId: row.contractId, fileId: row.fileId, status: row.status, signedAt: row.signedAt ?? row.workerSignedAt, createdAt: row.createdAt } : null;
 }
 
 // Заміна списку цілком (анкета працівника / редагування офісом). Валідація — до запису, помилка з індексом.
@@ -194,7 +203,8 @@ export async function generateZcnaDocument(workerId: number, adminId: number | n
     }, adminId);
   } catch (e: any) {
     const [open] = await db.select({ id: tasksTable.id, status: tasksTable.status }).from(tasksTable).where(eq(tasksTable.sourceKey, `zcna:w${workerId}`));
-    if (open && OPEN_STATUSES.includes(open.status as any)) throw new Error("ZCNA для цього працівника вже в роботі (відкрита задача ZUS) — закрийте її або дочекайтесь підтвердження");
+    // зголошення #35: «відкрита задача ZUS» читали як задачу ZUA — називаємо задачу й те, що документ уже є
+    if (open && OPEN_STATUSES.includes(open.status as any)) throw new Error(`ZCNA уже згенеровано — документ є серед документів фірми в профілі, а подати його до ZUS має задача #${open.id} «ZUS ZCNA — подати зголошення родини». Нову генерацію можна зробити після закриття цієї задачі.`);
     // стара закрита задача з тим самим ключем — звільнити ключ і спробувати ще раз
     if (open) { await db.update(tasksTable).set({ sourceKey: `zcna:w${workerId}:${open.id}` }).where(eq(tasksTable.id, open.id)); return generateZcnaDocument(workerId, adminId); }
     throw e;

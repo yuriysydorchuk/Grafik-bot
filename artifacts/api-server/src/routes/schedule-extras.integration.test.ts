@@ -5,7 +5,7 @@ import ExcelJS from "exceljs";
 import {
   app, hasTestDb, resetDb, seedAdmin, closeDb, db,
   factoriesTable, workersTable, scheduleWeeksTable, scheduleEntriesTable,
-  factoryShiftOverridesTable, monthlyReportsTable, factoryHoursTable,
+  factoryShiftOverridesTable, monthlyReportsTable, factoryHoursTable, contractsTable,
 } from "../test/harness.ts";
 import { eq, and } from "drizzle-orm";
 
@@ -342,6 +342,21 @@ test("нотатка офісу до пропуску (#29): зберігаєт�
   assert.equal((await request(app).patch(`/api/absences/${e}`).set("Cookie", cookie).set(H).send({ officeNote: "x".repeat(1001) })).status, 400);
   res = await request(app).patch(`/api/absences/${e}`).set("Cookie", cookie).set(H).send({ officeNote: "" });
   assert.equal(res.status, 200); assert.equal(res.body.officeNote, null);
+});
+
+test("GET /schedule noContract (#45): людина без підписаної умови на фабрику/фірму тижня позначена; підписана умова фірми знімає позначку", opts, async () => {
+  const f = await mkFactory(), w = await mkWorker(f), wk = await mkApprovedWeek();
+  await mkEntry(wk, w, f, "1", "scheduled");
+  let res = await request(app).get(`/api/schedule?weekStart=${WEEK}&factoryId=${f}`).set("Cookie", cookie);
+  assert.equal(res.status, 200); assert.equal(res.body.noContract?.[w], true, "умови немає → «!»");
+  // підписана умова на фабрику, що покриває тиждень
+  const [c] = await db.insert(contractsTable).values({ workerId: w, factoryId: f, status: "signed", dateFrom: WEEK, dateTo: null } as any).returning({ id: contractsTable.id });
+  res = await request(app).get(`/api/schedule?weekStart=${WEEK}&factoryId=${f}`).set("Cookie", cookie);
+  assert.equal(res.body.noContract?.[w], undefined, "підписана умова → без позначки");
+  // умова, що закінчилась до тижня, не рахується
+  await db.update(contractsTable).set({ dateTo: "2026-01-05" } as any).where(eq(contractsTable.id, c!.id));
+  res = await request(app).get(`/api/schedule?weekStart=${WEEK}&factoryId=${f}`).set("Cookie", cookie);
+  assert.equal(res.body.noContract?.[w], true);
 });
 
 test("PATCH /absences/:entryId відхиляє не-пропуск і невалідний штраф", opts, async () => {

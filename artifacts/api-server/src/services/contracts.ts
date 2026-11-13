@@ -761,6 +761,34 @@ export async function sendContractForSignature(contractId: number, adminId: numb
   return { token, link, notified, bundledCount: siblings.length };
 }
 
+/**
+ * Підписати заново (зголошення #43, 13.11.2026): підпис працівника непридатний (крапочки) — підписану умову
+ * повертаємо на підпис тим самим документом. Старий підписаний стан не стирається: шляхи підписаних PDF,
+ * час і PNG підпису лягають у `data._resigned[]` (файли лишаються на диску), у contract_files підписані
+ * шляхи знімаються (знову віддається unsigned PDF), токени попереднього підпису ревокуються, подія
+ * `resigned` — у signature_events. Далі — звичайний sendContractForSignature без бандлу.
+ */
+export async function resignContract(contractId: number, adminId: number | null): Promise<{ token: string; link: string | null; notified: boolean; bundledCount: number; previousStatus: string }> {
+  const [c] = await db.select().from(contractsTable).where(eq(contractsTable.id, contractId));
+  if (!c) throw new Error("Умову не знайдено");
+  if (!["worker_signed", "signed"].includes(c.status)) throw new Error(`Підписати заново можна лише підписану умову (поточний статус: ${c.status})`);
+  const files = await db.select({ id: contractFilesTable.id, signedPath: contractFilesTable.signedPath, signedSha256: contractFilesTable.signedSha256 }).from(contractFilesTable).where(eq(contractFilesTable.contractId, contractId));
+  const data = (c.data ?? {}) as Record<string, unknown>;
+  const history = Array.isArray(data._resigned) ? data._resigned as unknown[] : [];
+  history.push({
+    at: new Date().toISOString(), by: adminId, status: c.status, signedAt: c.signedAt, companySignedAt: c.companySignedAt, companySignedBy: c.companySignedBy,
+    workerSignaturePath: c.workerSignaturePath, files: files.filter(f => f.signedPath).map(f => ({ fileId: f.id, signedPath: f.signedPath, signedSha256: f.signedSha256 })),
+  });
+  await db.update(contractFilesTable).set({ signedPath: null, signedSha256: null }).where(eq(contractFilesTable.contractId, contractId));
+  await db.update(contractsTable).set({
+    status: "approved", signedAt: null, workerSignaturePath: null, companySignedBy: null, companySignedAt: null,
+    data: { ...data, _resigned: history }, updatedAt: new Date(),
+  }).where(eq(contractsTable.id, contractId));
+  await db.insert(signatureEventsTable).values({ contractId, event: "resigned" });
+  const r = await sendContractForSignature(contractId, adminId, { bundle: false });
+  return { ...r, previousStatus: c.status };
+}
+
 export async function finalizeContractSignature(contractId: number, adminId: number | null): Promise<{ stamped: boolean; reason?: string }> {
   const [contract] = await db.select().from(contractsTable).where(eq(contractsTable.id, contractId));
   if (!contract) throw new Error("Пакет не знайдено");

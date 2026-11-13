@@ -12,6 +12,7 @@ import { Spinner, Badge, Button, Input, Modal, Label } from "./ui";
 import { useT } from "../lib/i18n";
 import { RecipientsPicker } from "./RecipientsPicker";
 import { ReportRetakeButton } from "./ReportRetake";
+import { ReportPhotoUpload } from "./ReportPhotoUpload";
 
 type DayCell = {
   date: string;
@@ -551,6 +552,7 @@ function ReportWeekCell({ factoryId, weekStart, row, canEdit, onSaved }: { facto
       {rep != null && row.report && Math.abs(row.report.daysSum - rep) > 0.01 && <span className="text-[11px] text-amber-600" title={t("Сума по вибраних змінах відрізняється від вписаного тоталу")}>({row.report.daysSum})</span>}
       {rep != null && row.report?.photoLink && <a href={row.report.photoLink} target="_blank" rel="noreferrer" className="text-sky-600 hover:text-sky-800" title={t("Фото рапорту")} onClick={e => e.stopPropagation()}><Camera className="h-3.5 w-3.5" /></a>}
       {canEdit && rep != null && row.report?.photoLink && row.hasTelegram && <ReportRetakeButton workerId={row.workerId} factoryId={factoryId} weekStart={weekStart} title={`${row.name} · ${ddmm(weekStart)}–${ddmm(addDays(weekStart, 6))}`} />}
+      {canEdit && rep != null && <ReportPhotoUpload workerId={row.workerId} factoryId={factoryId} weekStart={weekStart} onDone={onSaved} />}
     </span>
   );
 }

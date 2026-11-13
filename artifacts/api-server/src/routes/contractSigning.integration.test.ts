@@ -232,6 +232,40 @@ test("finalize: дозволено лише з worker_signed; ставить com
   assert.equal(again.status, 400, "signed — уже термінальний, повторний finalize неможливий");
 });
 
+test("resign (#43): підписану умову можна анулювати й надіслати на підпис знову — старий підпис в історії, новий токен, цикл підпису повторюється", opts, async () => {
+  const { factoryId, companyId } = await mkFactory();
+  const workerId = await mkVerifiedWorker(companyId);
+  const { contractId, token } = await mkSentContract(workerId, factoryId);
+  assert.equal((await request(app).post(`/api/contracts/${contractId}/resign`).set("Cookie", owner).set(H)).status, 400, "ще не підписана — нема що анулювати");
+  await request(app).post(`/api/sign/${token}/consent`).set(H);
+  await request(app).post(`/api/sign/${token}`).set(H).send({ signature: TINY_PNG });
+  await request(app).post(`/api/contracts/${contractId}/finalize`).set("Cookie", owner).set(H);
+  const [before] = await db.select().from(contractsTable).where(eq(contractsTable.id, contractId));
+  assert.equal(before!.status, "signed");
+  const filesBefore = await db.select().from(contractFilesTable).where(eq(contractFilesTable.contractId, contractId));
+  assert.ok(filesBefore.every(f => f.signedPath));
+
+  const r = await request(app).post(`/api/contracts/${contractId}/resign`).set("Cookie", owner).set(H);
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.body.status, "sent"); assert.equal(r.body.previousStatus, "signed"); assert.ok(r.body.token);
+  const [c] = await db.select().from(contractsTable).where(eq(contractsTable.id, contractId));
+  assert.equal(c!.signedAt, null); assert.equal(c!.companySignedAt, null); assert.equal(c!.workerSignaturePath, null);
+  const hist = (c!.data as any)._resigned;
+  assert.equal(hist.length, 1); assert.equal(hist[0].status, "signed"); assert.equal(hist[0].files.length, filesBefore.length);
+  assert.equal(hist[0].files[0].signedPath, filesBefore[0]!.signedPath, "старий підписаний файл лишається в історії");
+  const filesAfter = await db.select().from(contractFilesTable).where(eq(contractFilesTable.contractId, contractId));
+  assert.ok(filesAfter.every(f => !f.signedPath), "знову віддається непідписаний PDF");
+  // старий токен мертвий, новий — живий і доводить умову до worker_signed знову
+  assert.notEqual((await request(app).get(`/api/sign/${token}`)).status, 200);
+  const t2 = r.body.token as string;
+  assert.equal((await request(app).get(`/api/sign/${t2}`)).status, 200);
+  await request(app).post(`/api/sign/${t2}/consent`).set(H);
+  const signed = await request(app).post(`/api/sign/${t2}`).set(H).send({ signature: TINY_PNG });
+  assert.equal(signed.status, 200, JSON.stringify(signed.body));
+  const [c2] = await db.select().from(contractsTable).where(eq(contractsTable.id, contractId));
+  assert.equal(c2!.status, "worker_signed");
+});
+
 test("finalize: гейт workerDocs — 403 без capability", opts, async () => {
   const { factoryId, companyId } = await mkFactory();
   const workerId = await mkVerifiedWorker(companyId);
