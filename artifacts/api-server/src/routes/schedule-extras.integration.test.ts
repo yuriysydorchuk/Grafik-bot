@@ -8,6 +8,7 @@ import {
   factoryShiftOverridesTable, monthlyReportsTable, factoryHoursTable, contractsTable,
 } from "../test/harness.ts";
 import { eq, and } from "drizzle-orm";
+import { addDaysStr } from "../lib/dates";
 
 // Разові зміни (factory_shift_overrides), Excel обліку годин з вибором колонок
 // і виправдання/штрафи відсутностей — регресійні тести на реальні звіти власника.
@@ -348,7 +349,8 @@ test("GET /schedule noContract (#45): людина без підписаної �
   const f = await mkFactory(), w = await mkWorker(f), wk = await mkApprovedWeek();
   await mkEntry(wk, w, f, "1", "scheduled");
   let res = await request(app).get(`/api/schedule?weekStart=${WEEK}&factoryId=${f}`).set("Cookie", cookie);
-  assert.equal(res.status, 200); assert.equal(res.body.noContract?.[w], true, "умови немає → «!»");
+  // людина є і в записі Пн, і в списку доступних фабрики → без умови позначені всі дні тижня
+  assert.equal(res.status, 200); assert.equal(res.body.noContract?.[w]?.length, 7, "умови немає → «!» на всі дні"); assert.ok(res.body.noContract?.[w]?.includes(WEEK));
   // підписана умова на фабрику, що покриває тиждень
   const [c] = await db.insert(contractsTable).values({ workerId: w, factoryId: f, status: "signed", dateFrom: WEEK, dateTo: null } as any).returning({ id: contractsTable.id });
   res = await request(app).get(`/api/schedule?weekStart=${WEEK}&factoryId=${f}`).set("Cookie", cookie);
@@ -356,7 +358,12 @@ test("GET /schedule noContract (#45): людина без підписаної �
   // умова, що закінчилась до тижня, не рахується
   await db.update(contractsTable).set({ dateTo: "2026-01-05" } as any).where(eq(contractsTable.id, c!.id));
   res = await request(app).get(`/api/schedule?weekStart=${WEEK}&factoryId=${f}`).set("Cookie", cookie);
-  assert.equal(res.body.noContract?.[w], true);
+  assert.equal(res.body.noContract?.[w]?.length, 7);
+  // поденно (ревʼю codex): умова з неділі тижня не знімає «!» з понеділка
+  await db.update(contractsTable).set({ dateFrom: addDaysStr(WEEK, 6), dateTo: null } as any).where(eq(contractsTable.id, c!.id));
+  res = await request(app).get(`/api/schedule?weekStart=${WEEK}&factoryId=${f}`).set("Cookie", cookie);
+  assert.ok(res.body.noContract?.[w]?.includes(WEEK), "умова з неділі → Пн досі без умови");
+  assert.ok(!res.body.noContract?.[w]?.includes(addDaysStr(WEEK, 6)), "неділя покрита умовою");
 });
 
 test("PATCH /absences/:entryId відхиляє не-пропуск і невалідний штраф", opts, async () => {

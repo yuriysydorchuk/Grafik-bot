@@ -40,7 +40,7 @@ type SchedResp = {
   cancelledCells: string[];
   shiftOverrides: Record<string, { start: string; end: string }>; // "day-shift" → разовий час зміни на цю дату
   workerNotes?: Record<number, string>; // примітка профілю (лише workerNote/svodniSensitive)
-  noContract?: Record<number, true>;    // без підписаної умови на фабрику/фірму на цей тиждень (#45)
+  noContract?: Record<number, string[]>; // дати тижня без підписаної умови на фабрику/фірму (#45, поденно)
 };
 type DragData =
   | { kind: "entry"; id: number; day: DayCode; shift: ShiftCode }
@@ -127,6 +127,9 @@ export default function Schedule() {
   const shiftOverrides = data?.shiftOverrides ?? {};
   const workerNotes = data?.workerNotes ?? {};
   const noContract = data?.noContract ?? {};
+  // «!» поденно: запис — на свою дату, резерв — якщо є хоч один день тижня без умови (#45)
+  const noContractOn = (workerId: number, day: DayCode) => (noContract[workerId] ?? []).includes(isoDayDate(weekStart, DAYS.indexOf(day)));
+  const noContractAny = (workerId: number) => (noContract[workerId]?.length ?? 0) > 0;
   // з приміткою імʼя бере свою ширину, а примітка — решту (стискається до 📝), інакше імʼя тягнеться на всю
   const nameFlex = (id: number | null | undefined) => id != null && workerNotes[id] ? "flex-initial" : "flex-1";
   // A shift "has happened" once its start time has passed → show actuals, lock editing.
@@ -573,7 +576,7 @@ export default function Schedule() {
                                   {usesPositions && e.positionId != null && <span title={posName(e.positionId)} className={`h-2 w-2 shrink-0 rounded-full ${dotClass(posColor(e.positionId))}`} />}
                                   <Link href={profileHref(e.workerId)} className={`min-w-0 ${nameFlex(e.workerId)} truncate font-medium text-slate-700 hover:text-red-600 hover:underline`}>{e.workerName}</Link>
                                   <NoteChip note={workerNotes[e.workerId]} />
-                                  {noContract[e.workerId] && <NoContractMark />}
+                                  {noContractOn(e.workerId, e.day) && <NoContractMark />}
                                   {e.selfTransport && <span title={t("Доїжджає сам")} className="shrink-0 text-sky-500"><Car className="h-3.5 w-3.5" /></span>}
                                   {usesGender && e.gender && <span className={`shrink-0 text-xs font-semibold ${genderClass(e.gender)}`}>{genderIcon(e.gender)}</span>}
                                   {cellEditing ? (
@@ -654,7 +657,7 @@ export default function Schedule() {
                                   <Link href={profileHref(e.workerId)} draggable={false} onClick={ev => ev.stopPropagation()}
                                     className={`min-w-0 ${nameFlex(e.workerId)} truncate hover:underline ${off ? "text-rose-600 line-through decoration-rose-400" : restGap != null ? "text-orange-700" : "text-slate-700 hover:text-red-600"}`}>{e.workerName}</Link>
                                   <NoteChip note={workerNotes[e.workerId]} />
-                                  {noContract[e.workerId] && <NoContractMark />}
+                                  {noContractOn(e.workerId, e.day) && <NoContractMark />}
                                   {e.selfTransport && <span title={t("Доїжджає сам")} className="shrink-0 text-sky-500"><Car className="h-3.5 w-3.5" /></span>}
                                   {usesGender && e.gender && <span className={`shrink-0 text-xs font-semibold ${genderClass(e.gender)}`}>{genderIcon(e.gender)}</span>}
                                   {restGap != null && <span className="shrink-0 text-xs" title={restTip}>⚠️</span>}
@@ -681,7 +684,7 @@ export default function Schedule() {
                                   {usesPositions && r.positionId != null && <span title={posName(r.positionId)} className={`h-2 w-2 shrink-0 rounded-full ${dotClass(posColor(r.positionId))}`} />}
                                   <Link href={profileHref(r.workerId)} draggable={false} className={`min-w-0 ${nameFlex(r.workerId)} truncate text-slate-600 hover:text-red-600 hover:underline`}>{r.name}</Link>
                                   <NoteChip note={workerNotes[r.workerId]} />
-                                  {noContract[r.workerId] && <NoContractMark />}
+                                  {noContractAny(r.workerId) && <NoContractMark />}
                                   {usesGender && r.gender && <span className={`shrink-0 text-xs font-semibold ${genderClass(r.gender)}`}>{genderIcon(r.gender)}</span>}
                                   {editable && <button onClick={() => addEntry.mutate({ workerId: r.workerId, day, shift })} className="shrink-0 rounded px-1 text-xs text-emerald-600 hover:bg-emerald-50">+</button>}
                                 </div>
@@ -783,7 +786,7 @@ export default function Schedule() {
                     onClick={() => { addEntry.mutate({ workerId: w.id, day: addTo.day, shift: addTo.shift }); setAddTo(null); }}
                     className="flex w-full items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-left text-sm hover:border-red-300 hover:bg-red-50 disabled:opacity-50">
                     <span className="min-w-0 flex-1 truncate font-medium text-slate-700">{w.fullName}</span>
-                    {noContract[w.id] && <NoContractMark />}
+                    {(noContract[w.id] ?? []).includes(cellDate) && <NoContractMark />}
                     {w.workerCode && <span className="shrink-0 font-mono text-xs text-slate-400">{w.workerCode}</span>}
                   </button>
                 ))}

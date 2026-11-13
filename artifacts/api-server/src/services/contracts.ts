@@ -779,12 +779,15 @@ export async function resignContract(contractId: number, adminId: number | null)
     at: new Date().toISOString(), by: adminId, status: c.status, signedAt: c.signedAt, companySignedAt: c.companySignedAt, companySignedBy: c.companySignedBy,
     workerSignaturePath: c.workerSignaturePath, files: files.filter(f => f.signedPath).map(f => ({ fileId: f.id, signedPath: f.signedPath, signedSha256: f.signedSha256 })),
   });
-  await db.update(contractFilesTable).set({ signedPath: null, signedSha256: null }).where(eq(contractFilesTable.contractId, contractId));
-  await db.update(contractsTable).set({
-    status: "approved", signedAt: null, workerSignaturePath: null, companySignedBy: null, companySignedAt: null,
-    data: { ...data, _resigned: history }, updatedAt: new Date(),
-  }).where(eq(contractsTable.id, contractId));
-  await db.insert(signatureEventsTable).values({ contractId, event: "resigned" });
+  // одна транзакція (ревʼю codex): історія, зняття підписаних шляхів і подія — або все, або нічого
+  await db.transaction(async tx => {
+    await tx.update(contractsTable).set({
+      status: "approved", signedAt: null, workerSignaturePath: null, companySignedBy: null, companySignedAt: null,
+      data: { ...data, _resigned: history }, updatedAt: new Date(),
+    }).where(eq(contractsTable.id, contractId));
+    await tx.update(contractFilesTable).set({ signedPath: null, signedSha256: null }).where(eq(contractFilesTable.contractId, contractId));
+    await tx.insert(signatureEventsTable).values({ contractId, event: "resigned" });
+  });
   const r = await sendContractForSignature(contractId, adminId, { bundle: false });
   return { ...r, previousStatus: c.status };
 }

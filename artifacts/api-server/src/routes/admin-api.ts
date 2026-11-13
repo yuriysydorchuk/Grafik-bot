@@ -3246,16 +3246,18 @@ router.get("/schedule", async (req, res) => {
     }
   }
 
-  // «!» без умови (зголошення #45, 13.11.2026): людина в тижні без підписаної (працівником) умови на фабрику
-  // запису або її фірму, що покриває дати тижня — щоб графікова не поставила в графік того, хто ще не підписав.
-  // Подієві документи (zaświadczenie/wypowiedzenie/aneks/zcna) умовою не є. Резерв/вільні — по фабриці запиту.
-  const noContract: Record<number, true> = {};
+  // «!» без умови (зголошення #45, 13.11.2026): дні тижня, на які в людини немає підписаної (працівником) умови
+  // на фабрику запису або її фірму — щоб графікова не поставила в графік того, хто ще не підписав. ПОДЕННО (ревʼю
+  // codex: умова з неділі не має знімати «!» з Пн–Сб): workerId → дати без умови; запис показує «!» лише на свою
+  // дату, резерв/пікер — якщо є хоч один такий день. Подієві документи (zaświadczenie/wypowiedzenie/aneks/zcna)
+  // умовою не є. Резерв/вільні — по фабриці запиту; без фабрики — обʼєднання по фабриках записів.
+  const noContract: Record<number, string[]> = {};
   {
     const ids = new Set<number>();
     for (const e of entries) ids.add(e.workerId);
     for (const list of [...Object.values(reserve), ...Object.values(available)]) for (const w of list) ids.add(w.workerId);
     if (ids.size) {
-      const weekEndStr = addDaysStr(weekStart, 6);
+      const weekDates = Array.from({ length: 7 }, (_, i) => addDaysStr(weekStart, i));
       const cs = await db.select({ id: contractsTable.id, workerId: contractsTable.workerId, factoryId: contractsTable.factoryId, companyId: contractsTable.companyId, dateFrom: contractsTable.dateFrom, dateTo: contractsTable.dateTo })
         .from(contractsTable).where(and(inArray(contractsTable.workerId, [...ids]), inArray(contractsTable.status, ["worker_signed", "signed"])));
       const { eventContractIds } = await import("../services/contractEndDocs");
@@ -3264,15 +3266,19 @@ router.get("/schedule", async (req, res) => {
       const d10 = (v: unknown) => v == null ? null : String(v).slice(0, 10);
       const byWorker = new Map<number, typeof cs>();
       for (const c of cs) if (!ev.has(c.id)) byWorker.set(c.workerId, [...(byWorker.get(c.workerId) ?? []), c]);
-      const covered = (workerId: number, facId: number) => (byWorker.get(workerId) ?? []).some(c => {
+      const coveredOn = (workerId: number, facId: number, date: string) => (byWorker.get(workerId) ?? []).some(c => {
         const from = d10(c.dateFrom), to = d10(c.dateTo);
-        if ((from && from > weekEndStr) || (to && to < weekStart)) return false;
+        if ((from && from > date) || (to && to < date)) return false;
         const cCompany = c.companyId ?? (c.factoryId != null ? facCompany.get(c.factoryId) ?? null : null);
         const fCompany = facCompany.get(facId) ?? null;
         return c.factoryId === facId || (cCompany != null && cCompany === fCompany);
       });
-      for (const e of entries) if (!covered(e.workerId, e.factoryId)) noContract[e.workerId] = true;
-      if (factoryId != null) for (const list of [...Object.values(reserve), ...Object.values(available)]) for (const w of list) if (!covered(w.workerId, factoryId)) noContract[w.workerId] = true;
+      const mark = (workerId: number, facId: number, dates: string[]) => {
+        for (const d of dates) if (!coveredOn(workerId, facId, d)) { const l = (noContract[workerId] ??= []); if (!l.includes(d)) l.push(d); }
+      };
+      for (const e of entries) mark(e.workerId, e.factoryId, [entryDateStr(weekStart, e.day)]);
+      if (factoryId != null) for (const list of [...Object.values(reserve), ...Object.values(available)]) for (const w of list) mark(w.workerId, factoryId, weekDates);
+      for (const l of Object.values(noContract)) l.sort();
     }
   }
 
